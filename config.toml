@@ -1,0 +1,55 @@
+# Kora Rent Reclaim Bot Configuration
+
+[solana]
+# Solana RPC endpoint (use devnet for testing)
+rpc_url = "https://api.devnet.solana.com"
+# Network: "Mainnet", "Devnet", or "Testnet"
+network = "Devnet"
+# Commitment level: "processed", "confirmed", or "finalized"
+commitment = "confirmed"
+# Rate limit delay between RPC calls (milliseconds)
+rate_limit_delay_ms = 100
+
+[kora]
+# Kora operator (fee payer) public key - accounts sponsored by this wallet will be monitored
+# This is the pubkey from your Kora node's signers.toml
+operator_pubkey = "YOUR_KORA_FEE_PAYER_PUBKEY_HERE"
+
+# Treasury wallet where reclaimed SOL will be sent
+# You should own the keypair for this wallet (set path below)
+treasury_wallet = "YOUR_TREASURY_WALLET_PUBKEY_HERE"
+
+# Path to treasury wallet keypair file (JSON format)
+# This keypair will sign reclaim transactions
+treasury_keypair_path = "./treasury-keypair.json"
+
+[reclaim]
+# Minimum days an account must be inactive before reclaim (protects recently closed accounts)
+min_inactive_days = 30
+
+# Enable automatic reclaim (set to false for manual mode)
+auto_reclaim_enabled = false
+
+# Number of accounts to process per batch
+batch_size = 10
+
+# Delay between batches (milliseconds) - prevents RPC rate limiting
+batch_delay_ms = 1000
+
+# Scan interval for auto mode (seconds)
+scan_interval_seconds = 3600
+
+# Dry run mode: if true, simulate reclaims without sending transactions
+dry_run = true
+
+# Whitelist: accounts to NEVER reclaim (protected addresses)
+whitelist = [
+    # Example: "ExamplePubkey111111111111111111111111111111"
+]
+
+# Blacklist: additional accounts to skip (for testing or manual exclusions)
+blacklist = []
+
+[database]
+# SQLite database file path
+path = "./kora_reclaim.db"

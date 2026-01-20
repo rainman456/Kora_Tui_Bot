@@ -20,6 +20,9 @@ pub enum ReclaimError {
     #[error("Transaction failed: {0}")]
     TransactionFailed(String),
     
+    #[error("JSON error: {0}")]
+    JsonError(#[from] serde_json::Error),
+    
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
