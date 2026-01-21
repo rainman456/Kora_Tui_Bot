@@ -92,7 +92,7 @@ impl SolanaRpcClient {
     ) -> Result<Vec<solana_client::rpc_response::RpcConfirmedTransactionStatusWithSignature>> {
         self.rate_limit().await;
         
-        let config = solana_client::rpc_config::GetConfirmedSignaturesForAddress2Config {
+        let config = solana_client::rpc_client::GetConfirmedSignaturesForAddress2Config {
             before,
             until,
             limit: Some(limit),

@@ -1,7 +1,7 @@
 use solana_sdk::pubkey::Pubkey;
 use chrono::{DateTime, Utc, Duration};
 use crate::{
-    error::{Result, ReclaimError},
+    error::Result,
     solana::{client::SolanaRpcClient, accounts::AccountDiscovery},
     config::Config,
 };
