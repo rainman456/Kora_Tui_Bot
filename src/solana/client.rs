@@ -14,9 +14,10 @@ use crate::error::Result;
 use tracing::{debug, warn};
 use std::time::Duration;
 
+#[derive(Clone)]
 pub struct SolanaRpcClient {
     pub client: RpcClient,
-    rate_limit_delay: Duration,
+    pub(crate) rate_limit_delay: Duration,
 }
 
 impl SolanaRpcClient {
@@ -77,7 +78,7 @@ impl SolanaRpcClient {
         before: Option<Signature>,
         until: Option<Signature>,
         limit: usize,
-    ) -> Result<Vec<solana_transaction_status::RpcConfirmedTransactionStatusWithSignature>> {
+    ) -> Result<Vec<solana_client::rpc_response::RpcConfirmedTransactionStatusWithSignature>> {
         self.rate_limit().await;
         
         let config = RpcSignaturesForAddressConfig {

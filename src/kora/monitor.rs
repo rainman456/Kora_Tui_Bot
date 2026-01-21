@@ -90,15 +90,10 @@ impl KoraMonitor {
     /// Uses the `until` parameter to only fetch signatures after a certain point
     pub async fn scan_new_accounts(
         &self,
-        since_signature: Option<solana_sdk::signature::Signature>,
+        _since_signature: Option<solana_sdk::signature::Signature>,
         max_transactions: usize,
     ) -> Result<Vec<SponsoredAccountInfo>> {
         info!("Scanning for new sponsored accounts...");
-        
-        let discovery = AccountDiscovery::new(
-            self.rpc_client.clone(),
-            self.operator_pubkey,
-        );
         
         // This would need modification to AccountDiscovery to support 'until' parameter
         // For now, we'll do a full scan and filter
@@ -122,18 +117,5 @@ impl KoraMonitor {
         
         info!("Total locked rent: {} lamports", total);
         Ok(total)
-    }
-}
-
-// Implement Clone for SolanaRpcClient (needed for AccountDiscovery)
-impl Clone for SolanaRpcClient {
-    fn clone(&self) -> Self {
-        Self {
-            client: solana_client::rpc_client::RpcClient::new_with_commitment(
-                self.client.url(),
-                self.client.commitment(),
-            ),
-            rate_limit_delay: self.rate_limit_delay,
-        }
     }
 }

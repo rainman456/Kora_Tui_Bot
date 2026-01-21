@@ -23,6 +23,18 @@ pub enum ReclaimError {
     #[error("JSON error: {0}")]
     JsonError(#[from] serde_json::Error),
     
+    #[error("Parse signature error: {0}")]
+    ParseSignature(#[from] solana_sdk::signature::ParseSignatureError),
+    
+    #[error("Parse pubkey error: {0}")]
+    ParsePubkey(#[from] solana_sdk::pubkey::ParsePubkeyError),
+    
+    #[error("Program error: {0}")]
+    ProgramError(#[from] solana_sdk::program_error::ProgramError),
+    
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
+    
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }

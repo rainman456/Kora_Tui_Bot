@@ -294,7 +294,7 @@ impl Database {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct DatabaseStats {
     pub total_accounts: usize,
     pub active_accounts: usize,

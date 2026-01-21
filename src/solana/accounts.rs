@@ -4,15 +4,13 @@ use solana_sdk::{
 };
 use solana_transaction_status::{
     EncodedConfirmedTransactionWithStatusMeta,
-    UiTransactionStatusMeta,
     UiMessage,
-    UiCompiledInstruction,
 };
 use crate::{
     error::Result,
     solana::client::SolanaRpcClient,
 };
-use tracing::{info, debug, warn};
+use tracing::{info, debug};
 use std::str::FromStr;
 use chrono::{DateTime, Utc};
 
@@ -64,7 +62,7 @@ impl AccountDiscovery {
             let limit = std::cmp::min(BATCH_SIZE, max_signatures - total_fetched);
             
             // Fetch batch of signatures
-            let signatures = self.rpc_client.get_signatures_for_address(
+            let signatures: Vec<solana_client::rpc_response::RpcConfirmedTransactionStatusWithSignature> = self.rpc_client.get_signatures_for_address(
                 &self.fee_payer,
                 before_signature,
                 None,
@@ -84,8 +82,7 @@ impl AccountDiscovery {
                     continue;
                 }
                 
-                let signature = Signature::from_str(&sig_info.signature)
-                    .map_err(|e| crate::error::ReclaimError::Other(anyhow::anyhow!("Invalid signature: {}", e)))?;
+                let signature = Signature::from_str(&sig_info.signature)?;
                 
                 // Get full transaction details
                 if let Some(tx) = self.rpc_client.get_transaction(&signature).await? {
@@ -159,13 +156,13 @@ impl AccountDiscovery {
                 parsed.account_keys.iter()
                     .map(|key| Pubkey::from_str(&key.pubkey))
                     .collect::<std::result::Result<Vec<_>, _>>()
-                    .map_err(|e| crate::error::ReclaimError::Other(anyhow::anyhow!("Invalid pubkey: {}", e)))
+                    .map_err(|e| crate::error::ReclaimError::ParsePubkey(e))
             }
             UiMessage::Raw(raw) => {
                 raw.account_keys.iter()
                     .map(|key| Pubkey::from_str(key))
                     .collect::<std::result::Result<Vec<_>, _>>()
-                    .map_err(|e| crate::error::ReclaimError::Other(anyhow::anyhow!("Invalid pubkey: {}", e)))
+                    .map_err(|e| crate::error::ReclaimError::ParsePubkey(e))
             }
         }
     }
@@ -174,7 +171,7 @@ impl AccountDiscovery {
     async fn parse_instruction_for_creation(
         &self,
         instruction: &solana_transaction_status::UiInstruction,
-        account_keys: &[Pubkey],
+        _account_keys: &[Pubkey],
         signature: Signature,
         slot: u64,
         creation_time: DateTime<Utc>,
@@ -182,18 +179,22 @@ impl AccountDiscovery {
         use solana_transaction_status::UiInstruction;
         
         match instruction {
-            UiInstruction::Parsed(parsed) => {
+            UiInstruction::Parsed(parsed_instr) => {
+                // Access the program field correctly
+                let program = &parsed_instr.program;
+                let parsed_value = &parsed_instr.parsed;
+                
                 // Check for System program CreateAccount or CreateAccountWithSeed
-                if parsed.program == "system" {
-                    if let Some(parsed_info) = parsed.parsed.as_object() {
-                        if let Some(info_type) = parsed_info.get("type").and_then(|v| v.as_str()) {
+                if program == "system" {
+                    if let Some(parsed_info) = parsed_value.as_object() {
+                        if let Some(info_type) = parsed_info.get("type").and_then(|v: &serde_json::Value| v.as_str()) {
                             if info_type == "createAccount" || info_type == "createAccountWithSeed" {
                                 // Extract new account pubkey from "info"
-                                if let Some(info) = parsed_info.get("info").and_then(|v| v.as_object()) {
-                                    if let Some(new_account_str) = info.get("newAccount").and_then(|v| v.as_str()) {
+                                if let Some(info) = parsed_info.get("info").and_then(|v: &serde_json::Value| v.as_object()) {
+                                    if let Some(new_account_str) = info.get("newAccount").and_then(|v: &serde_json::Value| v.as_str()) {
                                         let new_account = Pubkey::from_str(new_account_str)?;
-                                        let lamports = info.get("lamports").and_then(|v| v.as_u64()).unwrap_or(0);
-                                        let space = info.get("space").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                                        let lamports = info.get("lamports").and_then(|v: &serde_json::Value| v.as_u64()).unwrap_or(0);
+                                        let space = info.get("space").and_then(|v: &serde_json::Value| v.as_u64()).unwrap_or(0) as usize;
                                         
                                         return Ok(Some(SponsoredAccountInfo {
                                             pubkey: new_account,
@@ -212,12 +213,12 @@ impl AccountDiscovery {
                 }
                 
                 // Check for SPL Token InitializeAccount
-                if parsed.program == "spl-token" {
-                    if let Some(parsed_info) = parsed.parsed.as_object() {
-                        if let Some(info_type) = parsed_info.get("type").and_then(|v| v.as_str()) {
+                if program == "spl-token" {
+                    if let Some(parsed_info) = parsed_value.as_object() {
+                        if let Some(info_type) = parsed_info.get("type").and_then(|v: &serde_json::Value| v.as_str()) {
                             if info_type == "initializeAccount" {
-                                if let Some(info) = parsed_info.get("info").and_then(|v| v.as_object()) {
-                                    if let Some(account_str) = info.get("account").and_then(|v| v.as_str()) {
+                                if let Some(info) = parsed_info.get("info").and_then(|v: &serde_json::Value| v.as_object()) {
+                                    if let Some(account_str) = info.get("account").and_then(|v: &serde_json::Value| v.as_str()) {
                                         let account = Pubkey::from_str(account_str)?;
                                         
                                         // SPL Token accounts are typically 165 bytes
@@ -246,7 +247,7 @@ impl AccountDiscovery {
     /// Get the last transaction time for an account (for inactivity detection)
     pub async fn get_last_transaction_time(&self, address: &Pubkey) -> Result<Option<DateTime<Utc>>> {
         // Get the most recent signature for this address
-        let signatures = self.rpc_client.get_signatures_for_address(
+        let signatures: Vec<solana_client::rpc_response::RpcConfirmedTransactionStatusWithSignature> = self.rpc_client.get_signatures_for_address(
             address,
             None,
             None,
