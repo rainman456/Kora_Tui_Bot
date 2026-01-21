@@ -176,25 +176,26 @@ impl AccountDiscovery {
         slot: u64,
         creation_time: DateTime<Utc>,
     ) -> Result<Option<SponsoredAccountInfo>> {
-        use solana_transaction_status::UiInstruction;
+        use solana_transaction_status::{UiInstruction, UiParsedInstruction};
+        use serde_json::Value;
         
         match instruction {
             UiInstruction::Parsed(parsed_instr) => {
-                // Access the program field correctly
-                let program = &parsed_instr.program;
-                let parsed_value = &parsed_instr.parsed;
+                // We need to access fields program and parsed
+                // Using explicit destructuring to ensure we have the right type
+                let UiParsedInstruction { program, parsed, .. } = parsed_instr;
                 
                 // Check for System program CreateAccount or CreateAccountWithSeed
                 if program == "system" {
-                    if let Some(parsed_info) = parsed_value.as_object() {
-                        if let Some(info_type) = parsed_info.get("type").and_then(|v: &serde_json::Value| v.as_str()) {
+                    if let Some(parsed_info) = parsed.as_object() {
+                        if let Some(info_type) = parsed_info.get("type").and_then(|v: &Value| v.as_str()) {
                             if info_type == "createAccount" || info_type == "createAccountWithSeed" {
                                 // Extract new account pubkey from "info"
-                                if let Some(info) = parsed_info.get("info").and_then(|v: &serde_json::Value| v.as_object()) {
-                                    if let Some(new_account_str) = info.get("newAccount").and_then(|v: &serde_json::Value| v.as_str()) {
+                                if let Some(info) = parsed_info.get("info").and_then(|v: &Value| v.as_object()) {
+                                    if let Some(new_account_str) = info.get("newAccount").and_then(|v: &Value| v.as_str()) {
                                         let new_account = Pubkey::from_str(new_account_str)?;
-                                        let lamports = info.get("lamports").and_then(|v: &serde_json::Value| v.as_u64()).unwrap_or(0);
-                                        let space = info.get("space").and_then(|v: &serde_json::Value| v.as_u64()).unwrap_or(0) as usize;
+                                        let lamports = info.get("lamports").and_then(|v: &Value| v.as_u64()).unwrap_or(0);
+                                        let space = info.get("space").and_then(|v: &Value| v.as_u64()).unwrap_or(0) as usize;
                                         
                                         return Ok(Some(SponsoredAccountInfo {
                                             pubkey: new_account,
@@ -214,11 +215,11 @@ impl AccountDiscovery {
                 
                 // Check for SPL Token InitializeAccount
                 if program == "spl-token" {
-                    if let Some(parsed_info) = parsed_value.as_object() {
-                        if let Some(info_type) = parsed_info.get("type").and_then(|v: &serde_json::Value| v.as_str()) {
+                    if let Some(parsed_info) = parsed.as_object() {
+                        if let Some(info_type) = parsed_info.get("type").and_then(|v: &Value| v.as_str()) {
                             if info_type == "initializeAccount" {
-                                if let Some(info) = parsed_info.get("info").and_then(|v: &serde_json::Value| v.as_object()) {
-                                    if let Some(account_str) = info.get("account").and_then(|v: &serde_json::Value| v.as_str()) {
+                                if let Some(info) = parsed_info.get("info").and_then(|v: &Value| v.as_object()) {
+                                    if let Some(account_str) = info.get("account").and_then(|v: &Value| v.as_str()) {
                                         let account = Pubkey::from_str(account_str)?;
                                         
                                         // SPL Token accounts are typically 165 bytes

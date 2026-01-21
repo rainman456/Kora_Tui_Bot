@@ -9,15 +9,26 @@ use solana_sdk::{
 use solana_transaction_status::{
     UiTransactionEncoding, EncodedConfirmedTransactionWithStatusMeta,
 };
-use solana_client::rpc_config::{RpcTransactionConfig, RpcSignaturesForAddressConfig};
+use solana_client::rpc_config::RpcTransactionConfig;
 use crate::error::Result;
 use tracing::{debug, warn};
 use std::time::Duration;
 
-#[derive(Clone)]
 pub struct SolanaRpcClient {
     pub client: RpcClient,
     pub(crate) rate_limit_delay: Duration,
+}
+
+impl Clone for SolanaRpcClient {
+    fn clone(&self) -> Self {
+        Self {
+            client: RpcClient::new_with_commitment(
+                self.client.url(),
+                self.client.commitment(),
+            ),
+            rate_limit_delay: self.rate_limit_delay,
+        }
+    }
 }
 
 impl SolanaRpcClient {
@@ -81,12 +92,11 @@ impl SolanaRpcClient {
     ) -> Result<Vec<solana_client::rpc_response::RpcConfirmedTransactionStatusWithSignature>> {
         self.rate_limit().await;
         
-        let config = RpcSignaturesForAddressConfig {
-            before: before.map(|s| s.to_string()),
-            until: until.map(|s| s.to_string()),
+        let config = solana_client::rpc_config::GetConfirmedSignaturesForAddress2Config {
+            before,
+            until,
             limit: Some(limit),
             commitment: Some(self.client.commitment()),
-            ..Default::default()
         };
         
         debug!("Fetching signatures for address: {}", address);
