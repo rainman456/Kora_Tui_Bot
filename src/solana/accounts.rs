@@ -180,62 +180,78 @@ impl AccountDiscovery {
         use serde_json::Value;
         
         match instruction {
-            UiInstruction::Parsed(parsed_instr) => {
-                // We need to access fields program and parsed
-                // Using explicit destructuring to ensure we have the right type
-                let UiParsedInstruction { program, parsed, .. } = parsed_instr;
-                
-                // Check for System program CreateAccount or CreateAccountWithSeed
-                if program == "system" {
-                    if let Some(parsed_info) = parsed.as_object() {
-                        if let Some(info_type) = parsed_info.get("type").and_then(|v: &Value| v.as_str()) {
-                            if info_type == "createAccount" || info_type == "createAccountWithSeed" {
-                                // Extract new account pubkey from "info"
-                                if let Some(info) = parsed_info.get("info").and_then(|v: &Value| v.as_object()) {
-                                    if let Some(new_account_str) = info.get("newAccount").and_then(|v: &Value| v.as_str()) {
-                                        let new_account = Pubkey::from_str(new_account_str)?;
-                                        let lamports = info.get("lamports").and_then(|v: &Value| v.as_u64()).unwrap_or(0);
-                                        let space = info.get("space").and_then(|v: &Value| v.as_u64()).unwrap_or(0) as usize;
-                                        
-                                        return Ok(Some(SponsoredAccountInfo {
-                                            pubkey: new_account,
-                                            creation_signature: signature,
-                                            creation_slot: slot,
-                                            creation_time,
-                                            initial_balance: lamports,
-                                            data_size: space,
-                                            account_type: AccountType::System,
-                                        }));
+            UiInstruction::Parsed(parsed_instr_enum) => {
+                // UiParsedInstruction is an enum that can be Parsed or PartiallyDecoded
+                match parsed_instr_enum {
+                    UiParsedInstruction::Parsed(parsed_instr) => {
+                        let program = &parsed_instr.program;
+                        let parsed_value = &parsed_instr.parsed;
+                        
+                        // Check for System program CreateAccount or CreateAccountWithSeed
+                        if program == "system" {
+                            if let Some(parsed_info) = parsed_value.as_object() {
+                                let type_option: Option<&str> = parsed_info.get("type").and_then(|v| v.as_str());
+                                if let Some(info_type) = type_option {
+                                    if info_type == "createAccount" || info_type == "createAccountWithSeed" {
+                                        // Extract new account pubkey from "info"
+                                        let info_option: Option<&serde_json::Map<String, Value>> = parsed_info.get("info").and_then(|v| v.as_object());
+                                        if let Some(info) = info_option {
+                                            let new_account_option: Option<&str> = info.get("newAccount").and_then(|v| v.as_str());
+                                            if let Some(new_account_str) = new_account_option {
+                                                let new_account = Pubkey::from_str(new_account_str)?;
+                                                let lamports_val: Option<u64> = info.get("lamports").and_then(|v| v.as_u64());
+                                                let lamports = lamports_val.unwrap_or(0);
+                                                
+                                                let space_val: Option<u64> = info.get("space").and_then(|v| v.as_u64());
+                                                let space = space_val.unwrap_or(0) as usize;
+                                                
+                                                return Ok(Some(SponsoredAccountInfo {
+                                                    pubkey: new_account,
+                                                    creation_signature: signature,
+                                                    creation_slot: slot,
+                                                    creation_time,
+                                                    initial_balance: lamports,
+                                                    data_size: space,
+                                                    account_type: AccountType::System,
+                                                }));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // Check for SPL Token InitializeAccount
+                        if program == "spl-token" {
+                            if let Some(parsed_info) = parsed_value.as_object() {
+                                let type_option: Option<&str> = parsed_info.get("type").and_then(|v| v.as_str());
+                                if let Some(info_type) = type_option {
+                                    if info_type == "initializeAccount" {
+                                        let info_option: Option<&serde_json::Map<String, Value>> = parsed_info.get("info").and_then(|v| v.as_object());
+                                        if let Some(info) = info_option {
+                                            let account_option: Option<&str> = info.get("account").and_then(|v| v.as_str());
+                                            if let Some(account_str) = account_option {
+                                                let account = Pubkey::from_str(account_str)?;
+                                                
+                                                // SPL Token accounts are typically 165 bytes
+                                                return Ok(Some(SponsoredAccountInfo {
+                                                    pubkey: account,
+                                                    creation_signature: signature,
+                                                    creation_slot: slot,
+                                                    creation_time,
+                                                    initial_balance: 0, // Will be set later
+                                                    data_size: 165,
+                                                    account_type: AccountType::SplToken,
+                                                }));
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-                }
-                
-                // Check for SPL Token InitializeAccount
-                if program == "spl-token" {
-                    if let Some(parsed_info) = parsed.as_object() {
-                        if let Some(info_type) = parsed_info.get("type").and_then(|v: &Value| v.as_str()) {
-                            if info_type == "initializeAccount" {
-                                if let Some(info) = parsed_info.get("info").and_then(|v: &Value| v.as_object()) {
-                                    if let Some(account_str) = info.get("account").and_then(|v: &Value| v.as_str()) {
-                                        let account = Pubkey::from_str(account_str)?;
-                                        
-                                        // SPL Token accounts are typically 165 bytes
-                                        return Ok(Some(SponsoredAccountInfo {
-                                            pubkey: account,
-                                            creation_signature: signature,
-                                            creation_slot: slot,
-                                            creation_time,
-                                            initial_balance: 0, // Will be set later
-                                            data_size: 165,
-                                            account_type: AccountType::SplToken,
-                                        }));
-                                    }
-                                }
-                            }
-                        }
+                    UiParsedInstruction::PartiallyDecoded(_) => {
+                        // Skip partially decoded instructions
                     }
                 }
             }
