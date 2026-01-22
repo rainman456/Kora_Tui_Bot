@@ -56,6 +56,9 @@ tui-input = "0.8"
 indicatif = "0.17"
 bs58 = "0.5"
 
+# Telegram Bot
+teloxide = { version = "0.12", features = ["macros"] }
+
 [dev-dependencies]
 mockall = "0.12"
 tempfile = "3.8"

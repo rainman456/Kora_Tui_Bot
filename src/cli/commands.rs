@@ -67,4 +67,7 @@ pub enum Commands {
     
     /// Initialize database and configuration
     Init,
+
+    /// Start Telegram bot interface
+    Telegram,
 }

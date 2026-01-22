@@ -87,7 +87,7 @@ impl ReclaimEngine {
         );
         
         // Build appropriate close instruction based on account type
-        let instruction = self.build_close_instruction(account_pubkey, account_type)?;
+        let instruction = self.build_close_instruction(account_pubkey, account_type, balance)?;
         
         if self.dry_run {
             info!("DRY RUN: Would reclaim {} lamports from {}", balance, account_pubkey);
@@ -128,21 +128,22 @@ impl ReclaimEngine {
     }
     
     /// Build appropriate close instruction based on account type
+    /// Returns the instruction and the balance to be reclaimed
     fn build_close_instruction(
         &self,
         account_pubkey: &Pubkey,
         account_type: &AccountType,
+        balance: u64,
     ) -> Result<Instruction> {
         match account_type {
             AccountType::System => {
                 // For system accounts, transfer all lamports to treasury
                 // This effectively "closes" the account
+                // NOTE: The account being transferred FROM must sign the transaction
                 Ok(system_instruction::transfer(
                     account_pubkey,
                     &self.treasury_wallet,
-                    // We'll use get_balance in the actual transaction
-                    // For instruction building, we use a placeholder
-                    0, // This will be filled by the account's actual balance
+                    balance, // Use actual balance
                 ))
             }
             

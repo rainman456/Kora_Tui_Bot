@@ -60,7 +60,11 @@ impl KoraMonitor {
     pub async fn is_kora_sponsored(&self, pubkey: &Pubkey) -> Result<bool> {
         debug!("Checking if account {} was sponsored by Kora", pubkey);
         
-        // Get account signatures (limit to recent history)
+        use std::str::FromStr;
+        use solana_sdk::signature::Signature;
+        
+        // Get account signatures - we want the earliest (creation) transaction
+        // Fetch in batches and look for the oldest one
         let signatures = self.rpc_client.get_signatures_for_address(
             pubkey,
             None,
@@ -68,21 +72,59 @@ impl KoraMonitor {
             100, // Check last 100 transactions
         ).await?;
         
-        // Check if operator pubkey appears as fee payer in any transaction
-        for sig_info in signatures {
-            // Skip failed transactions
-            if sig_info.err.is_some() {
-                continue;
-            }
-            
-            // For a full check, we'd need to parse the transaction
-            // This is a simplified version - in production, you'd want to
-            // check the transaction details to verify the fee payer
-            // For now, we assume if we find it, it's sponsored
+        if signatures.is_empty() {
+            debug!("No signatures found for account {}", pubkey);
+            return Ok(false);
         }
         
-        // More robust: scan discovery results
-        Ok(false) // Conservative default
+        // The last signature in the list is typically the oldest (earliest)
+        // Get the creation transaction (oldest/first)
+        let oldest_sig = signatures.last().unwrap();
+        
+        // Skip if the transaction failed
+        if oldest_sig.err.is_some() {
+            debug!("Creation transaction failed for account {}", pubkey);
+            return Ok(false);
+        }
+        
+        // Get full transaction details to check the fee payer
+        let signature = Signature::from_str(&oldest_sig.signature)?;
+        if let Some(tx) = self.rpc_client.get_transaction(&signature).await? {
+            // Extract fee payer from transaction
+            let transaction = match &tx.transaction.transaction {
+                solana_transaction_status::EncodedTransaction::Json(ui_tx) => ui_tx,
+                _ => return Ok(false),
+            };
+            
+            // The fee payer is always the first account in the message
+            let fee_payer = match &transaction.message {
+                solana_transaction_status::UiMessage::Parsed(parsed) => {
+                    if let Some(first_key) = parsed.account_keys.first() {
+                        Pubkey::from_str(&first_key.pubkey).ok()
+                    } else {
+                        None
+                    }
+                }
+                solana_transaction_status::UiMessage::Raw(raw) => {
+                    if let Some(first_key) = raw.account_keys.first() {
+                        Pubkey::from_str(first_key).ok()
+                    } else {
+                        None
+                    }
+                }
+            };
+            
+            if let Some(payer) = fee_payer {
+                let is_sponsored = payer == self.operator_pubkey;
+                debug!(
+                    "Account {} fee payer: {}, operator: {}, sponsored: {}",
+                    pubkey, payer, self.operator_pubkey, is_sponsored
+                );
+                return Ok(is_sponsored);
+            }
+        }
+        
+        Ok(false)
     }
     
     /// Scan for new sponsored accounts since last check

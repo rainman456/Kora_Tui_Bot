@@ -6,6 +6,7 @@ mod cli;
 mod config;
 mod error;
 mod utils;
+mod telegram;
 
 use clap::Parser;
 use cli::{Cli, Commands};
@@ -62,6 +63,11 @@ async fn main() {
             info!("Initializing...");
             initialize(&config).await
         }
+        
+        Commands::Telegram => {
+            info!("Starting Telegram bot interface...");
+            telegram::run_telegram_bot(config).await
+        }
     };
     
     if let Err(e) = result {
@@ -79,7 +85,7 @@ async fn run_tui(_config: Config) -> error::Result<()> {
     Ok(())
 }
 
-// ... rest of existing functions (scan_accounts, reclaim_account, etc.)
+
 async fn scan_accounts(config: &Config, verbose: bool, dry_run: bool, limit: Option<usize>) -> error::Result<()> {
     println!("{}", "Scanning for eligible accounts...".cyan());
     

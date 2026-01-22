@@ -113,8 +113,9 @@ impl SolanaRpcClient {
     ) -> Result<Option<EncodedConfirmedTransactionWithStatusMeta>> {
         self.rate_limit().await;
         
+        // Use JsonParsed to get parsed instruction data for account detection
         let config = RpcTransactionConfig {
-            encoding: Some(UiTransactionEncoding::Json),
+            encoding: Some(UiTransactionEncoding::JsonParsed),
             commitment: Some(self.client.commitment()),
             max_supported_transaction_version: Some(0),
         };

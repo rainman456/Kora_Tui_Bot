@@ -20,9 +20,10 @@ impl EligibilityChecker {
     /// Check if account is eligible for rent reclaim
     /// 
     /// An account is eligible if:
-    /// 1. It doesn't exist (closed), OR
-    /// 2. It's empty (no meaningful data) AND inactive (no recent transactions)
-    /// 3. It's not whitelisted or blacklisted
+    /// 1. It exists (has balance to reclaim)
+    /// 2. It's not whitelisted or blacklisted
+    /// 3. It has been inactive for the minimum period
+    /// 4. It's empty (no meaningful data) or has only rent balance
     pub async fn is_eligible(&self, pubkey: &Pubkey, created_at: DateTime<Utc>) -> Result<bool> {
         // Check whitelist first (never reclaim)
         if self.is_whitelisted(pubkey) {
@@ -36,38 +37,54 @@ impl EligibilityChecker {
             return Ok(false);
         }
         
-        // Check 1: Account is closed (doesn't exist)
-        let account_exists = self.rpc_client.is_account_active(pubkey).await?;
-        if !account_exists {
-            debug!("Account {} is closed (doesn't exist)", pubkey);
-            return Ok(true);
+        // Check if account exists - if not, nothing to reclaim
+        let account = self.rpc_client.get_account(pubkey).await?;
+        if account.is_none() {
+            debug!("Account {} doesn't exist, nothing to reclaim", pubkey);
+            return Ok(false);
         }
         
-        // Check 2a: Account is empty (check data and balance)
-        if let Some(account) = self.rpc_client.get_account(pubkey).await? {
-            let min_balance = self.rpc_client.get_minimum_balance_for_rent_exemption(account.data.len())?;
-            let is_empty = crate::solana::rent::RentCalculator::is_empty_account(&account, min_balance);
-            
-            if is_empty {
-                // Check 2b: Account is inactive
-                if let Ok(inactive) = self.check_inactivity(pubkey).await {
-                    if inactive {
-                        debug!("Account {} is empty and inactive", pubkey);
-                        return Ok(true);
-                    }
-                }
-            }
+        let account = account.unwrap();
+        
+        // Account must have balance to reclaim
+        if account.lamports == 0 {
+            debug!("Account {} has zero balance", pubkey);
+            return Ok(false);
         }
         
-        // Check 3: Minimum inactive period (for all accounts)
+        // Check minimum inactive period based on creation time
         let now = Utc::now();
         let min_inactive = Duration::days(self.config.reclaim.min_inactive_days as i64);
         
         if now - created_at < min_inactive {
-            debug!("Account {} hasn't been inactive long enough", pubkey);
+            debug!("Account {} hasn't been inactive long enough (created: {})", pubkey, created_at);
             return Ok(false);
         }
         
+        // Check last activity time
+        let is_inactive = self.check_inactivity(pubkey).await.unwrap_or(false);
+        if !is_inactive {
+            debug!("Account {} has recent activity", pubkey);
+            return Ok(false);
+        }
+        
+        // Check if account is empty (no meaningful data)
+        let min_balance = self.rpc_client.get_minimum_balance_for_rent_exemption(account.data.len())?;
+        let is_empty = crate::solana::rent::RentCalculator::is_empty_account(&account, min_balance);
+        
+        if is_empty {
+            debug!("Account {} is eligible: empty and inactive", pubkey);
+            return Ok(true);
+        }
+        
+        // Account has data but might still be reclaimable if it's only rent
+        // Allow reclaim if balance is close to minimum rent-exempt amount
+        if account.lamports <= min_balance * 2 {
+            debug!("Account {} is eligible: has minimal balance and is inactive", pubkey);
+            return Ok(true);
+        }
+        
+        debug!("Account {} is not eligible: has significant data/balance", pubkey);
         Ok(false)
     }
     
@@ -126,8 +143,17 @@ impl EligibilityChecker {
             return Ok("Account is blacklisted (excluded)".to_string());
         }
         
-        if !self.rpc_client.is_account_active(pubkey).await? {
-            return Ok("Account is closed (eligible for reclaim)".to_string());
+        // Check if account exists
+        let account = self.rpc_client.get_account(pubkey).await?;
+        if account.is_none() {
+            return Ok("Account is closed (nothing to reclaim)".to_string());
+        }
+        
+        let account = account.unwrap();
+        
+        // Check balance
+        if account.lamports == 0 {
+            return Ok("Account has zero balance (nothing to reclaim)".to_string());
         }
         
         let now = Utc::now();
@@ -139,21 +165,35 @@ impl EligibilityChecker {
             return Ok(format!("Account needs {} more days of inactivity", days_remaining));
         }
         
-        // Check if empty
-        if let Some(account) = self.rpc_client.get_account(pubkey).await? {
-            let min_balance = self.rpc_client.get_minimum_balance_for_rent_exemption(account.data.len())?;
-            let is_empty = crate::solana::rent::RentCalculator::is_empty_account(&account, min_balance);
-            
-            if !is_empty {
-                return Ok("Account still has data or significant balance".to_string());
-            }
+        // Check inactivity
+        let is_inactive = self.check_inactivity(pubkey).await.unwrap_or(false);
+        if !is_inactive {
+            return Ok("Account has recent activity".to_string());
         }
         
-        // Check inactivity
-        match self.check_inactivity(pubkey).await {
-            Ok(true) => Ok("Eligible for reclaim (empty and inactive)".to_string()),
-            Ok(false) => Ok("Account has recent activity".to_string()),
-            Err(e) => Ok(format!("Could not determine activity: {}", e)),
+        // Check if empty
+        let min_balance = self.rpc_client.get_minimum_balance_for_rent_exemption(account.data.len())?;
+        let is_empty = crate::solana::rent::RentCalculator::is_empty_account(&account, min_balance);
+        
+        if is_empty {
+            return Ok(format!(
+                "Eligible for reclaim: empty account with {} lamports",
+                account.lamports
+            ));
         }
+        
+        // Check if balance is minimal
+        if account.lamports <= min_balance * 2 {
+            return Ok(format!(
+                "Eligible for reclaim: minimal balance ({} lamports)",
+                account.lamports
+            ));
+        }
+        
+        Ok(format!(
+            "Not eligible: account has significant data/balance ({} lamports, {} bytes data)",
+            account.lamports,
+            account.data.len()
+        ))
     }
 }
