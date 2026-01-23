@@ -32,6 +32,43 @@ cargo build --release
 
 ### 2. Configure
 
+
+## Telegram Notifications
+
+The bot supports automatic notifications for:
+
+- ✅ Scan completion (total accounts found, eligible for reclaim)
+- ✅ Individual reclaim success/failure
+- ✅ Batch processing completion
+- ✅ High-value reclaim alerts (configurable threshold)
+- ❌ Error notifications
+
+### Configuration
+
+Enable notifications in `config.toml`:
+```toml
+[telegram]
+bot_token = "your_bot_token"
+authorized_users = [your_telegram_user_id]
+notifications_enabled = true
+alert_threshold_sol = 0.1  # Alert for reclaims above this amount
+```
+
+### Getting Your Telegram User ID
+
+1. Message [@userinfobot](https://t.me/userinfobot) on Telegram
+2. Copy your numeric ID
+3. Add it to `authorized_users` in config
+
+### Notification Types
+
+- **Scan Complete**: After each scan cycle
+- **High-Value Alert**: When reclaim exceeds threshold
+- **Batch Summary**: After batch processing completes
+- **Errors**: When critical errors occur
+
+
+
 Copy the sample configuration and edit with your details:
 
 ```bash

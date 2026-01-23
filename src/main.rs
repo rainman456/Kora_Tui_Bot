@@ -222,18 +222,132 @@ async fn reclaim_account(config: &Config, pubkey: &str, yes: bool, dry_run: bool
     let account_type = kora::AccountType::System;
     
     // Reclaim
-    let result = engine.reclaim_account(&account_pubkey, &account_type).await?;
+//     let result = engine.reclaim_account(&account_pubkey, &account_type).await?;
     
-    if let Some(sig) = result.signature {
-        println!("✓ Reclaim successful!");
-        println!("Signature: {}", sig);
-        println!("Reclaimed: {}", utils::format_sol(result.amount_reclaimed));
-    } else if result.dry_run {
-        println!("DRY RUN: Would reclaim {}", utils::format_sol(result.amount_reclaimed));
+//     if let Some(sig) = result.signature {
+//         println!("✓ Reclaim successful!");
+//         println!("Signature: {}", sig);
+//         println!("Reclaimed: {}", utils::format_sol(result.amount_reclaimed));
+//     } else if result.dry_run {
+//         println!("DRY RUN: Would reclaim {}", utils::format_sol(result.amount_reclaimed));
+//     }
+    
+//     Ok(())
+// }
+// Save to database
+if let Some(sig) = result.signature {
+    println!("✓ Reclaim successful!");
+    println!("Signature: {}", sig);
+    println!("Reclaimed: {}", utils::format_sol(result.amount_reclaimed));
+    
+    // Save to database
+    let db = storage::Database::new(&config.database.path)?;
+    
+    db.update_account_status(&pubkey, storage::models::AccountStatus::Reclaimed)?;
+    
+    db.save_reclaim_operation(&storage::models::ReclaimOperation {
+        id: 0,
+        account_pubkey: pubkey.to_string(),
+        reclaimed_amount: result.amount_reclaimed,
+        tx_signature: sig.to_string(),
+        timestamp: chrono::Utc::now(),
+        reason: "Manual CLI reclaim".to_string(),
+    })?;
+    
+    info!("Reclaim operation saved to database");
+    
+    // Send notification if enabled
+    if let Some(notifier) = telegram::AutoNotifier::new(config) {
+        notifier.notify_reclaim_success(&pubkey, result.amount_reclaimed).await;
     }
     
-    Ok(())
+} else if result.dry_run {
+    println!("DRY RUN: Would reclaim {}", utils::format_sol(result.amount_reclaimed));
 }
+
+// async fn run_auto_service(config: &Config, interval: u64, dry_run: bool) -> error::Result<()> {
+//     println!("{}", "Starting automated reclaim service...".green());
+//     println!("Interval: {} seconds", interval);
+//     println!("Dry run: {}", dry_run);
+    
+//     let actual_dry_run = dry_run || config.reclaim.dry_run;
+    
+//     loop {
+//         info!("Running reclaim cycle...");
+        
+//         // Initialize clients
+//         let rpc_client = solana::SolanaRpcClient::new(
+//             &config.solana.rpc_url,
+//             config.commitment_config(),
+//             config.solana.rate_limit_delay_ms,
+//         );
+        
+//         let operator_pubkey = config.operator_pubkey()?;
+//         let monitor = kora::KoraMonitor::new(rpc_client.clone(), operator_pubkey);
+        
+//         // Discover accounts
+//         let sponsored_accounts = match monitor.get_sponsored_accounts(5000).await {
+//             Ok(accounts) => accounts,
+//             Err(e) => {
+//                 warn!("Failed to discover accounts: {}", e);
+//                 tokio::time::sleep(tokio::time::Duration::from_secs(interval)).await;
+//                 continue;
+//             }
+//         };
+        
+//         info!("Found {} sponsored accounts", sponsored_accounts.len());
+        
+//         // Check eligibility
+//         let eligibility_checker = reclaim::EligibilityChecker::new(rpc_client.clone(), config.clone());
+//         let mut eligible = Vec::new();
+        
+//         for account_info in sponsored_accounts {
+//             if let Ok(true) = eligibility_checker.is_eligible(&account_info.pubkey, account_info.created_at).await {
+//                 eligible.push((account_info.pubkey, account_info.account_type));
+//             }
+//         }
+        
+//         if !eligible.is_empty() {
+//             info!("Found {} eligible accounts", eligible.len());
+            
+//             // Load treasury and reclaim
+//             if let Ok(treasury_keypair) = config.load_treasury_keypair() {
+//                 let treasury_wallet = config.treasury_wallet()?;
+//                 let engine = reclaim::ReclaimEngine::new(
+//                     rpc_client.clone(),
+//                     treasury_wallet,
+//                     treasury_keypair,
+//                     actual_dry_run,
+//                 );
+                
+//                 let batch_processor = reclaim::BatchProcessor::new(
+//                     engine,
+//                     config.reclaim.batch_size,
+//                     config.reclaim.batch_delay_ms,
+//                 );
+                
+//                 match batch_processor.reclaim_all_eligible(eligible).await {
+//                     Ok(summary) => {
+//                         info!(
+//                             "Batch complete: {} successful, {} failed, {} SOL reclaimed",
+//                             summary.successful,
+//                             summary.failed,
+//                             solana::rent::RentCalculator::lamports_to_sol(summary.total_reclaimed)
+//                         );
+//                     }
+//                     Err(e) => {
+//                         warn!("Batch processing failed: {}", e);
+//                     }
+//                 }
+//             }
+//         } else {
+//             info!("No eligible accounts found");
+//         }
+        
+//         tokio::time::sleep(tokio::time::Duration::from_secs(interval)).await;
+//     }
+// }
+
 
 async fn run_auto_service(config: &Config, interval: u64, dry_run: bool) -> error::Result<()> {
     println!("{}", "Starting automated reclaim service...".green());
@@ -241,6 +355,12 @@ async fn run_auto_service(config: &Config, interval: u64, dry_run: bool) -> erro
     println!("Dry run: {}", dry_run);
     
     let actual_dry_run = dry_run || config.reclaim.dry_run;
+    
+    // Initialize auto-notifier
+    let notifier = telegram::AutoNotifier::new(config);
+    if notifier.is_some() {
+        println!("{}", "✓ Telegram notifications enabled".green());
+    }
     
     loop {
         info!("Running reclaim cycle...");
@@ -252,7 +372,18 @@ async fn run_auto_service(config: &Config, interval: u64, dry_run: bool) -> erro
             config.solana.rate_limit_delay_ms,
         );
         
-        let operator_pubkey = config.operator_pubkey()?;
+        let operator_pubkey = match config.operator_pubkey() {
+            Ok(pk) => pk,
+            Err(e) => {
+                error!("Failed to get operator pubkey: {}", e);
+                if let Some(ref n) = notifier {
+                    n.notify_error(&format!("Failed to get operator pubkey: {}", e)).await;
+                }
+                tokio::time::sleep(tokio::time::Duration::from_secs(interval)).await;
+                continue;
+            }
+        };
+        
         let monitor = kora::KoraMonitor::new(rpc_client.clone(), operator_pubkey);
         
         // Discover accounts
@@ -260,6 +391,9 @@ async fn run_auto_service(config: &Config, interval: u64, dry_run: bool) -> erro
             Ok(accounts) => accounts,
             Err(e) => {
                 warn!("Failed to discover accounts: {}", e);
+                if let Some(ref n) = notifier {
+                    n.notify_error(&format!("Account discovery failed: {}", e)).await;
+                }
                 tokio::time::sleep(tokio::time::Duration::from_secs(interval)).await;
                 continue;
             }
@@ -271,42 +405,113 @@ async fn run_auto_service(config: &Config, interval: u64, dry_run: bool) -> erro
         let eligibility_checker = reclaim::EligibilityChecker::new(rpc_client.clone(), config.clone());
         let mut eligible = Vec::new();
         
-        for account_info in sponsored_accounts {
+        for account_info in &sponsored_accounts {
             if let Ok(true) = eligibility_checker.is_eligible(&account_info.pubkey, account_info.created_at).await {
                 eligible.push((account_info.pubkey, account_info.account_type));
             }
+        }
+        
+        // Notify scan complete
+        if let Some(ref n) = notifier {
+            n.notify_scan_complete(sponsored_accounts.len(), eligible.len()).await;
         }
         
         if !eligible.is_empty() {
             info!("Found {} eligible accounts", eligible.len());
             
             // Load treasury and reclaim
-            if let Ok(treasury_keypair) = config.load_treasury_keypair() {
-                let treasury_wallet = config.treasury_wallet()?;
-                let engine = reclaim::ReclaimEngine::new(
-                    rpc_client.clone(),
-                    treasury_wallet,
-                    treasury_keypair,
-                    actual_dry_run,
-                );
-                
-                let batch_processor = reclaim::BatchProcessor::new(
-                    engine,
-                    config.reclaim.batch_size,
-                    config.reclaim.batch_delay_ms,
-                );
-                
-                match batch_processor.reclaim_all_eligible(eligible).await {
-                    Ok(summary) => {
-                        info!(
-                            "Batch complete: {} successful, {} failed, {} SOL reclaimed",
-                            summary.successful,
-                            summary.failed,
-                            solana::rent::RentCalculator::lamports_to_sol(summary.total_reclaimed)
-                        );
+            let treasury_keypair = match config.load_treasury_keypair() {
+                Ok(kp) => kp,
+                Err(e) => {
+                    error!("Failed to load treasury keypair: {}", e);
+                    if let Some(ref n) = notifier {
+                        n.notify_error(&format!("Failed to load treasury keypair: {}", e)).await;
                     }
-                    Err(e) => {
-                        warn!("Batch processing failed: {}", e);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(interval)).await;
+                    continue;
+                }
+            };
+            
+            let treasury_wallet = config.treasury_wallet()?;
+            let engine = reclaim::ReclaimEngine::new(
+                rpc_client.clone(),
+                treasury_wallet,
+                treasury_keypair,
+                actual_dry_run,
+            );
+            
+            let batch_processor = reclaim::BatchProcessor::new(
+                engine,
+                config.reclaim.batch_size,
+                config.reclaim.batch_delay_ms,
+            );
+            
+            match batch_processor.reclaim_all_eligible(eligible).await {
+                Ok(summary) => {
+                    info!(
+                        "Batch complete: {} successful, {} failed, {} SOL reclaimed",
+                        summary.successful,
+                        summary.failed,
+                        solana::rent::RentCalculator::lamports_to_sol(summary.total_reclaimed)
+                    );
+                    
+                    // Save successful reclaims to database and send notifications
+                    if summary.successful > 0 {
+                        if let Ok(db) = storage::Database::new(&config.database.path) {
+                            for (pubkey, result) in &summary.results {
+                                if let Ok(reclaim_result) = result {
+                                    if let Some(sig) = reclaim_result.signature {
+                                        // Update account status
+                                        let _ = db.update_account_status(
+                                            &pubkey.to_string(),
+                                            storage::models::AccountStatus::Reclaimed
+                                        );
+                                        
+                                        // Save reclaim operation
+                                        let _ = db.save_reclaim_operation(&storage::models::ReclaimOperation {
+                                            id: 0,
+                                            account_pubkey: pubkey.to_string(),
+                                            reclaimed_amount: reclaim_result.amount_reclaimed,
+                                            tx_signature: sig.to_string(),
+                                            timestamp: chrono::Utc::now(),
+                                            reason: "Automated batch reclaim".to_string(),
+                                        });
+                                        
+                                        // Send individual success notification for high-value reclaims
+                                        if let Some(ref n) = notifier {
+                                            if let Some(tg_config) = &config.telegram {
+                                                n.notify_high_value_reclaim(
+                                                    &pubkey.to_string(),
+                                                    reclaim_result.amount_reclaimed,
+                                                    tg_config.alert_threshold_sol
+                                                ).await;
+                                            }
+                                        }
+                                    }
+                                } else if let Err(e) = result {
+                                    // Notify failure
+                                    if let Some(ref n) = notifier {
+                                        n.notify_reclaim_failed(&pubkey.to_string(), &e.to_string()).await;
+                                    }
+                                }
+                            }
+                            info!("Saved {} reclaim operations to database", summary.successful);
+                        }
+                    }
+                    
+                    // Send batch summary notification
+                    if let Some(ref n) = notifier {
+                        let total_sol = solana::rent::RentCalculator::lamports_to_sol(summary.total_reclaimed);
+                        n.notify_batch_complete(summary.successful, summary.failed, total_sol).await;
+                    }
+                    
+                    // Print summary
+                    summary.print_summary();
+                }
+                Err(e) => {
+                    warn!("Batch processing failed: {}", e);
+                    if let Some(ref n) = notifier {
+                        n.notify_error(&format!("Batch processing failed: {}", e)).await;
                     }
                 }
             }
@@ -317,7 +522,6 @@ async fn run_auto_service(config: &Config, interval: u64, dry_run: bool) -> erro
         tokio::time::sleep(tokio::time::Duration::from_secs(interval)).await;
     }
 }
-
 async fn show_stats(config: &Config, format: &str) -> error::Result<()> {
     let db = storage::Database::new(&config.database.path)?;
     let stats = db.get_stats()?;

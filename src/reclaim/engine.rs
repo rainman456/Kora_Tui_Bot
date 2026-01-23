@@ -48,130 +48,366 @@ impl ReclaimEngine {
     /// Handles different account types:
     /// - System accounts: Transfer balance to treasury
     /// - SPL Token accounts: Close account instruction
-    pub async fn reclaim_account(
-        &self,
-        account_pubkey: &Pubkey,
-        account_type: &AccountType,
-    ) -> Result<ReclaimResult> {
-        info!("Attempting to reclaim rent from account: {}", account_pubkey);
+    // pub async fn reclaim_account(
+    //     &self,
+    //     account_pubkey: &Pubkey,
+    //     account_type: &AccountType,
+    // ) -> Result<ReclaimResult> {
+    //     info!("Attempting to reclaim rent from account: {}", account_pubkey);
         
-        // Get account info
-        let account = self.rpc_client.get_account(account_pubkey).await?;
+    //     // Get account info
+    //     let account = self.rpc_client.get_account(account_pubkey).await?;
         
-        let balance = if let Some(acc) = account {
-            acc.lamports
-        } else {
-            // Account already closed
-            warn!("Account {} is already closed, nothing to reclaim", account_pubkey);
-            return Ok(ReclaimResult {
-                signature: None,
-                amount_reclaimed: 0,
-                account: *account_pubkey,
-                dry_run: self.dry_run,
-            });
-        };
+    //     let balance = if let Some(acc) = account {
+    //         acc.lamports
+    //     } else {
+    //         // Account already closed
+    //         warn!("Account {} is already closed, nothing to reclaim", account_pubkey);
+    //         return Ok(ReclaimResult {
+    //             signature: None,
+    //             amount_reclaimed: 0,
+    //             account: *account_pubkey,
+    //             dry_run: self.dry_run,
+    //         });
+    //     };
         
-        if balance == 0 {
-            warn!("No rent to reclaim from account: {}", account_pubkey);
+    //     if balance == 0 {
+    //         warn!("No rent to reclaim from account: {}", account_pubkey);
+    //         return Err(crate::error::ReclaimError::NotEligible(
+    //             "Account has no balance".to_string()
+    //         ));
+    //     }
+        
+    //     info!(
+    //         "Reclaiming {} lamports ({:.9} SOL) from {} (type: {:?})",
+    //         balance,
+    //         crate::solana::rent::RentCalculator::lamports_to_sol(balance),
+    //         account_pubkey,
+    //         account_type
+    //     );
+        
+    //     // Build appropriate close instruction based on account type
+    //     let instruction = self.build_close_instruction(account_pubkey, account_type, balance)?;
+        
+    //     if self.dry_run {
+    //         info!("DRY RUN: Would reclaim {} lamports from {}", balance, account_pubkey);
+    //         return Ok(ReclaimResult {
+    //             signature: None,
+    //             amount_reclaimed: balance,
+    //             account: *account_pubkey,
+    //             dry_run: true,
+    //         });
+    //     }
+        
+    //     // Build and send transaction
+    //     let recent_blockhash = self.rpc_client.get_latest_blockhash()?;
+        
+    //     let transaction = Transaction::new_signed_with_payer(
+    //         &[instruction],
+    //         Some(&self.signer.pubkey()),
+    //         &[&self.signer],
+    //         recent_blockhash,
+    //     );
+        
+    //     // Send transaction with retry logic
+    //     let signature = self.rpc_client.send_and_confirm_transaction(&transaction).await?;
+        
+    //     info!(
+    //         "✓ Reclaimed {} lamports from {} | Signature: {}",
+    //         balance,
+    //         account_pubkey,
+    //         signature
+    //     );
+        
+    //     Ok(ReclaimResult {
+    //         signature: Some(signature),
+    //         amount_reclaimed: balance,
+    //         account: *account_pubkey,
+    //         dry_run: false,
+    //     })
+    // }
+
+
+
+    /// Reclaim rent from an account
+/// 
+/// Handles different account types:
+/// - System accounts: Cannot reclaim (user owns the keys)
+/// - SPL Token accounts: Close account instruction (if operator has close_authority)
+/// - Other program accounts: Requires program-specific logic
+pub async fn reclaim_account(
+    &self,
+    account_pubkey: &Pubkey,
+    account_type: &AccountType,
+) -> Result<ReclaimResult> {
+    info!("Attempting to reclaim rent from account: {}", account_pubkey);
+    
+    // Get account info
+    let account = self.rpc_client.get_account(account_pubkey).await?;
+    
+    let (balance, account_data) = if let Some(acc) = account {
+        (acc.lamports, acc)
+    } else {
+        // Account already closed
+        warn!("Account {} is already closed, nothing to reclaim", account_pubkey);
+        return Ok(ReclaimResult {
+            signature: None,
+            amount_reclaimed: 0,
+            account: *account_pubkey,
+            dry_run: self.dry_run,
+        });
+    };
+    
+    if balance == 0 {
+        warn!("No rent to reclaim from account: {}", account_pubkey);
+        return Err(crate::error::ReclaimError::NotEligible(
+            "Account has no balance".to_string()
+        ));
+    }
+    
+    info!(
+        "Reclaiming {} lamports ({:.9} SOL) from {} (type: {:?})",
+        balance,
+        crate::solana::rent::RentCalculator::lamports_to_sol(balance),
+        account_pubkey,
+        account_type
+    );
+    
+    // For SPL Token accounts, verify token balance is zero before closing
+    if let AccountType::SplToken = account_type {
+        // SPL Token account data structure:
+        // - Mint: 32 bytes (offset 0)
+        // - Owner: 32 bytes (offset 32)
+        // - Amount: 8 bytes (offset 64)
+        // - Delegate: 36 bytes (offset 72)
+        // - State: 1 byte (offset 108)
+        // - IsNative: 12 bytes (offset 109)
+        // - DelegatedAmount: 8 bytes (offset 121)
+        // - CloseAuthority: 36 bytes (offset 129)
+        
+        if account_data.data.len() < 165 {
             return Err(crate::error::ReclaimError::NotEligible(
-                "Account has no balance".to_string()
+                "Invalid SPL Token account data size".to_string()
             ));
         }
         
-        info!(
-            "Reclaiming {} lamports ({:.9} SOL) from {} (type: {:?})",
-            balance,
-            crate::solana::rent::RentCalculator::lamports_to_sol(balance),
-            account_pubkey,
-            account_type
-        );
+        // Check token amount (offset 64, 8 bytes as u64 little-endian)
+        let amount_bytes: [u8; 8] = account_data.data[64..72]
+            .try_into()
+            .map_err(|_| crate::error::ReclaimError::NotEligible(
+                "Failed to parse token amount from account data".to_string()
+            ))?;
+        let token_amount = u64::from_le_bytes(amount_bytes);
         
-        // Build appropriate close instruction based on account type
-        let instruction = self.build_close_instruction(account_pubkey, account_type, balance)?;
-        
-        if self.dry_run {
-            info!("DRY RUN: Would reclaim {} lamports from {}", balance, account_pubkey);
-            return Ok(ReclaimResult {
-                signature: None,
-                amount_reclaimed: balance,
-                account: *account_pubkey,
-                dry_run: true,
-            });
+        if token_amount > 0 {
+            return Err(crate::error::ReclaimError::NotEligible(
+                format!(
+                    "Cannot close token account: still has {} tokens. Account must be emptied first.",
+                    token_amount
+                )
+            ));
         }
         
-        // Build and send transaction
-        let recent_blockhash = self.rpc_client.get_latest_blockhash()?;
+        // Check account state (offset 108, 1 byte)
+        // 0 = Uninitialized, 1 = Initialized, 2 = Frozen
+        let state = account_data.data[108];
+        if state == 2 {
+            return Err(crate::error::ReclaimError::NotEligible(
+                "Cannot close frozen token account".to_string()
+            ));
+        }
         
-        let transaction = Transaction::new_signed_with_payer(
-            &[instruction],
-            Some(&self.signer.pubkey()),
-            &[&self.signer],
-            recent_blockhash,
-        );
+        // Verify close authority
+        // CloseAuthority is at offset 129 (4 bytes for option discriminant + 32 bytes for pubkey)
+        // First byte indicates if close authority is set (0 = None, 1 = Some)
+        let has_close_authority = account_data.data[129] == 1;
         
-        // Send transaction with retry logic
-        let signature = self.rpc_client.send_and_confirm_transaction(&transaction).await?;
-        
-        info!(
-            "✓ Reclaimed {} lamports from {} | Signature: {}",
-            balance,
-            account_pubkey,
-            signature
-        );
-        
-        Ok(ReclaimResult {
-            signature: Some(signature),
+        if has_close_authority {
+            let close_authority_bytes: [u8; 32] = account_data.data[130..162]
+                .try_into()
+                .map_err(|_| crate::error::ReclaimError::NotEligible(
+                    "Failed to parse close authority from account data".to_string()
+                ))?;
+            let close_authority = Pubkey::new_from_array(close_authority_bytes);
+            
+            if close_authority != self.signer.pubkey() {
+                return Err(crate::error::ReclaimError::NotEligible(
+                    format!(
+                        "Cannot close token account: operator ({}) is not the close authority ({})",
+                        self.signer.pubkey(),
+                        close_authority
+                    )
+                ));
+            }
+            
+            info!(
+                "Verified: Operator {} has close authority for token account {}",
+                self.signer.pubkey(),
+                account_pubkey
+            );
+        } else {
+            // Check if operator is the account owner as fallback
+            let owner_bytes: [u8; 32] = account_data.data[32..64]
+                .try_into()
+                .map_err(|_| crate::error::ReclaimError::NotEligible(
+                    "Failed to parse owner from account data".to_string()
+                ))?;
+            let owner = Pubkey::new_from_array(owner_bytes);
+            
+            if owner != self.signer.pubkey() {
+                return Err(crate::error::ReclaimError::NotEligible(
+                    format!(
+                        "Cannot close token account: no close authority set and operator ({}) is not the owner ({})",
+                        self.signer.pubkey(),
+                        owner
+                    )
+                ));
+            }
+            
+            info!(
+                "Verified: Operator {} is the owner of token account {}",
+                self.signer.pubkey(),
+                account_pubkey
+            );
+        }
+    }
+    
+    // Build appropriate close instruction based on account type
+    let instruction = self.build_close_instruction(account_pubkey, account_type, balance)?;
+    
+    if self.dry_run {
+        info!("DRY RUN: Would reclaim {} lamports from {}", balance, account_pubkey);
+        return Ok(ReclaimResult {
+            signature: None,
             amount_reclaimed: balance,
             account: *account_pubkey,
-            dry_run: false,
-        })
+            dry_run: true,
+        });
     }
+    
+    // Build and send transaction
+    let recent_blockhash = self.rpc_client.get_latest_blockhash()?;
+    
+    let transaction = Transaction::new_signed_with_payer(
+        &[instruction],
+        Some(&self.signer.pubkey()),
+        &[&self.signer],
+        recent_blockhash,
+    );
+    
+    // Send transaction with retry logic
+    info!("Sending reclaim transaction for account {}", account_pubkey);
+    let signature = self.rpc_client.send_and_confirm_transaction(&transaction).await?;
+    
+    info!(
+        "✓ Successfully reclaimed {} lamports from {} | Signature: {}",
+        balance,
+        account_pubkey,
+        signature
+    );
+    
+    Ok(ReclaimResult {
+        signature: Some(signature),
+        amount_reclaimed: balance,
+        account: *account_pubkey,
+        dry_run: false,
+    })
+}
     
     /// Build appropriate close instruction based on account type
     /// Returns the instruction and the balance to be reclaimed
+    // fn build_close_instruction(
+    //     &self,
+    //     account_pubkey: &Pubkey,
+    //     account_type: &AccountType,
+    //     balance: u64,
+    // ) -> Result<Instruction> {
+    //     match account_type {
+    //         AccountType::System => {
+    //             // For system accounts, transfer all lamports to treasury
+    //             // This effectively "closes" the account
+    //             // NOTE: The account being transferred FROM must sign the transaction
+    //             Ok(system_instruction::transfer(
+    //                 account_pubkey,
+    //                 &self.treasury_wallet,
+    //                 balance, // Use actual balance
+    //             ))
+    //         }
+            
+    //         AccountType::SplToken => {
+    //             // For SPL Token accounts, use the close_account instruction
+    //             // This requires the account owner's authority
+    //             // Note: The actual owner/authority would need to be provided
+    //             // For Kora-sponsored accounts, the operator should have authority
+                
+    //             let close_instruction = spl_token::instruction::close_account(
+    //                 &spl_token::id(),
+    //                 account_pubkey,
+    //                 &self.treasury_wallet, // Destination for remaining SOL
+    //                 &self.signer.pubkey(), // Authority (operator)
+    //                 &[], // No multisig signers
+    //             )?;
+                
+    //             Ok(close_instruction)
+    //         }
+            
+    //         AccountType::Other(program_id) => {
+    //             warn!("Cannot automatically close account owned by program: {}", program_id);
+    //             Err(crate::error::ReclaimError::NotEligible(
+    //                 format!("Unsupported account type owned by program: {}", program_id)
+    //             ))
+    //         }
+    //     }
+    // }
     fn build_close_instruction(
-        &self,
-        account_pubkey: &Pubkey,
-        account_type: &AccountType,
-        balance: u64,
-    ) -> Result<Instruction> {
-        match account_type {
-            AccountType::System => {
-                // For system accounts, transfer all lamports to treasury
-                // This effectively "closes" the account
-                // NOTE: The account being transferred FROM must sign the transaction
-                Ok(system_instruction::transfer(
-                    account_pubkey,
-                    &self.treasury_wallet,
-                    balance, // Use actual balance
-                ))
-            }
+    &self,
+    account_pubkey: &Pubkey,
+    account_type: &AccountType,
+    balance: u64,
+) -> Result<Instruction> {
+    match account_type {
+        AccountType::System => {
+            // CRITICAL: We cannot close system accounts we don't own!
+            // For Kora-sponsored accounts, the user owns the account after creation.
+            // The only way to reclaim is if the user voluntarily transfers back
+            // or if we implement a program-based solution.
+            warn!("Cannot automatically reclaim from System account: user owns the keys");
+            Err(crate::error::ReclaimError::NotEligible(
+                "Cannot reclaim from System accounts - user controls the private key. \
+                 Reclaim only possible if user voluntarily closes account.".to_string()
+            ))
+        }
+        
+        AccountType::SplToken => {
+            // For SPL Token accounts, we can only close if:
+            // 1. The operator was set as the close_authority during creation
+            // 2. The account has zero token balance
             
-            AccountType::SplToken => {
-                // For SPL Token accounts, use the close_account instruction
-                // This requires the account owner's authority
-                // Note: The actual owner/authority would need to be provided
-                // For Kora-sponsored accounts, the operator should have authority
-                
-                let close_instruction = spl_token::instruction::close_account(
-                    &spl_token::id(),
-                    account_pubkey,
-                    &self.treasury_wallet, // Destination for remaining SOL
-                    &self.signer.pubkey(), // Authority (operator)
-                    &[], // No multisig signers
-                )?;
-                
-                Ok(close_instruction)
-            }
+            // First verify the account can be closed (zero token balance)
+            // Note: This should be checked before calling this function
             
-            AccountType::Other(program_id) => {
-                warn!("Cannot automatically close account owned by program: {}", program_id);
-                Err(crate::error::ReclaimError::NotEligible(
-                    format!("Unsupported account type owned by program: {}", program_id)
-                ))
-            }
+            let close_instruction = spl_token::instruction::close_account(
+                &spl_token::id(),
+                account_pubkey,
+                &self.treasury_wallet, // Destination for remaining SOL
+                &self.signer.pubkey(), // Authority (must be close_authority)
+                &[], // No multisig signers
+            )?;
+            
+            Ok(close_instruction)
+        }
+        
+        AccountType::Other(program_id) => {
+            // For other program accounts, we need program-specific logic
+            warn!("Cannot automatically close account owned by program: {}", program_id);
+            Err(crate::error::ReclaimError::NotEligible(
+                format!("Custom program accounts require program-specific close logic for: {}", program_id)
+            ))
         }
     }
+}
+
+
     
     /// Batch reclaim multiple accounts
     pub async fn batch_reclaim(

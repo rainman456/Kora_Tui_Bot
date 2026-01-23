@@ -115,10 +115,10 @@ impl SolanaRpcClient {
         
         // Use JsonParsed to get parsed instruction data for account detection
         let config = RpcTransactionConfig {
-            encoding: Some(UiTransactionEncoding::JsonParsed),
-            commitment: Some(self.client.commitment()),
-            max_supported_transaction_version: Some(0),
-        };
+    encoding: Some(UiTransactionEncoding::JsonParsed),  // Changed to JsonParsed
+    commitment: Some(self.client.commitment()),
+    max_supported_transaction_version: Some(0),
+};
         
         match self.client.get_transaction_with_config(signature, config) {
             Ok(tx) => Ok(Some(tx)),

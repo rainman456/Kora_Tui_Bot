@@ -1,6 +1,6 @@
 ### Simplified Explanation of the Task
 
-Okay, let's break this down super simply. Imagine you're running a service called Kora on the Solana blockchain. Kora helps apps pay for users' transactions and create accounts (like digital wallets or storage spots) so users don't have to pay themselves—this makes things smoother and more user-friendly.
+ Imagine you're running a service called Kora on the Solana blockchain. Kora helps apps pay for users' transactions and create accounts (like digital wallets or storage spots) so users don't have to pay themselves—this makes things smoother and more user-friendly.
 
 But here's the catch: When Kora creates these accounts, it has to "lock up" some SOL (Solana's cryptocurrency) as "rent." Think of rent like a deposit you pay to keep the account alive on the blockchain. Over time, many of these accounts get closed, abandoned, or just aren't needed anymore. If you (as the Kora operator) don't notice and reclaim that locked SOL, it's like losing money quietly because it's stuck there forever.
 
@@ -11,13 +11,13 @@ The task is to build a smart "bot" (an automated program) that:
 
 The goal isn't just to automate this—it's also to make it transparent. The bot should show you reports like "Hey, we reclaimed X SOL from this account because it was closed," so you understand what's happening and don't lose money accidentally.
 
-This is a bounty (like a coding contest) from what seems like SuperteamNG. If you win, your code goes public in their repo, and you might present it live. You have to build it alone, make it open-source, include a good README explaining Kora and rent stuff, have a working demo on Solana's testnet (devnet) or real network (mainnet), and create a video or article explaining your approach.
 
-You're free to design it how you want, as long as the core works. Ideas include making it a command-line tool, a background service that runs on a schedule, or even a Telegram bot for alerts. But since you mentioned using Rust for the main bot and Ratatui for a dashboard, we'll focus on that: A Rust-based program with a terminal-based UI (like a simple interactive screen) to monitor and control everything.
 
-### What Exactly You Need to Build
 
-Based on the requirements, here's the core of what you're building:
+
+### What Exactly Are We Building
+
+Based on the requirements, here's the core of what we're building:
 1. **The Bot Core (in Rust)**: This is the brain. It needs to:
    - Connect to your Kora node and Solana blockchain to list and monitor sponsored accounts.
    - Check each account's status (e.g., is it closed? Is it empty and unused?).

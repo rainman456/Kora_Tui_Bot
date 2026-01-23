@@ -4,6 +4,8 @@ use crate::telegram::bot::{BotState, Command};
 use crate::kora::KoraMonitor;
 use crate::reclaim::EligibilityChecker;
 use crate::utils;
+use crate::telegram::formatters::format_sol_tg;
+
 
 /// Handle commands
 pub async fn answer(bot: Bot, msg: Message, cmd: Command, state: Arc<BotState>) -> ResponseResult<()> {
@@ -130,7 +132,8 @@ pub async fn answer(bot: Bot, msg: Message, cmd: Command, state: Arc<BotState>) 
                         format!(
                             "💰 *Eligibility Check*\n\nFound {} eligible accounts.\nEst. reclaimable: {}", 
                             eligible_count,
-                            utils::format_sol(total_reclaimable)
+                            //utils::format_sol(total_reclaimable)
+                            format_sol_tg(total_reclaimable)
                         )
                     ).parse_mode(teloxide::types::ParseMode::Markdown).await?;
                 }
@@ -159,7 +162,8 @@ pub async fn answer(bot: Bot, msg: Message, cmd: Command, state: Arc<BotState>) 
                         stats.closed_accounts,
                         stats.reclaimed_accounts,
                         stats.total_operations,
-                        utils::format_sol(stats.total_reclaimed),
+                        //utils::format_sol(stats.total_reclaimed),
+                        format_sol_tg(stats.total_reclaimed),
                         stats.avg_reclaim_amount
                     );
                     bot.send_message(msg.chat.id, msg_text).parse_mode(teloxide::types::ParseMode::Markdown).await?;

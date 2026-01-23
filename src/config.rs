@@ -12,14 +12,31 @@ pub struct Config {
     pub telegram: Option<TelegramConfig>,
 }
 
+// #[derive(Debug, Deserialize, Clone)]
+// pub struct TelegramConfig {
+//     pub bot_token: String,
+//     pub authorized_users: Vec<u64>,
+//     #[serde(default)]
+//     pub notifications_enabled: bool,
+//     #[serde(default)]
+//     pub alert_threshold_sol: f64,
+// }
 #[derive(Debug, Deserialize, Clone)]
 pub struct TelegramConfig {
     pub bot_token: String,
     pub authorized_users: Vec<u64>,
-    #[serde(default)]
+    #[serde(default = "default_notifications_enabled")]
     pub notifications_enabled: bool,
-    #[serde(default)]
+    #[serde(default = "default_alert_threshold")]
     pub alert_threshold_sol: f64,
+}
+
+fn default_notifications_enabled() -> bool {
+    true
+}
+
+fn default_alert_threshold() -> f64 {
+    0.1 // Alert for reclaims above 0.1 SOL
 }
 
 #[derive(Debug, Deserialize, Clone)]
