@@ -35,7 +35,6 @@ pub enum Command {
 }
 
 pub async fn run_telegram_bot(config: Config) -> crate::error::Result<()> {
-    // Check if telegram config exists
     let telegram_config = if let Some(conf) = &config.telegram {
         conf
     } else {
@@ -47,7 +46,6 @@ pub async fn run_telegram_bot(config: Config) -> crate::error::Result<()> {
     
     let bot = Bot::new(telegram_config.bot_token.clone());
     
-    // Initialize clients
     let rpc_client = SolanaRpcClient::new(
         &config.solana.rpc_url,
         config.commitment_config(),

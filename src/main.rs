@@ -16,15 +16,12 @@ use colored::*;
 
 #[tokio::main]
 async fn main() {
-    // Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter("kora_reclaim=debug,info")
         .init();
     
-    // Parse CLI arguments
     let cli = Cli::parse();
     
-    // Load configuration
     let config = match Config::load() {
         Ok(cfg) => cfg,
         Err(e) => {
@@ -33,7 +30,6 @@ async fn main() {
         }
     };
     
-    // Execute command
     let result = match cli.command {
         Commands::Tui => {
             run_tui(config).await
@@ -89,25 +85,21 @@ async fn run_tui(_config: Config) -> error::Result<()> {
 async fn scan_accounts(config: &Config, verbose: bool, dry_run: bool, limit: Option<usize>) -> error::Result<()> {
     println!("{}", "Scanning for eligible accounts...".cyan());
     
-    // Initialize Solana client
     let rpc_client = solana::SolanaRpcClient::new(
         &config.solana.rpc_url,
         config.commitment_config(),
         config.solana.rate_limit_delay_ms,
     );
     
-    // Initialize Kora monitor
     let operator_pubkey = config.operator_pubkey()?;
     let monitor = kora::KoraMonitor::new(rpc_client.clone(), operator_pubkey);
     
-    // Discover sponsored accounts
     let max_txns = limit.unwrap_or(5000);
     info!("Discovering sponsored accounts from up to {} transactions", max_txns);
     let sponsored_accounts = monitor.get_sponsored_accounts(max_txns).await?;
     
     println!("Found {} sponsored accounts", sponsored_accounts.len());
     
-    // Check eligibility
     let eligibility_checker = reclaim::EligibilityChecker::new(rpc_client.clone(), config.clone());
     
     let mut eligible = Vec::new();
@@ -212,57 +204,50 @@ async fn reclaim_account(config: &Config, pubkey: &str, yes: bool, dry_run: bool
     
     // Initialize reclaim engine
     let engine = reclaim::ReclaimEngine::new(
-        rpc_client,
+        rpc_client.clone(),
         treasury_wallet,
         treasury_keypair,
         dry_run || config.reclaim.dry_run,
     );
     
-    // Determine account type (default to System for now)
-    let account_type = kora::AccountType::System;
+    // Determine account type - Default to SplToken since System accounts can't be reclaimed
+    // In production, you should detect the actual account type
+    let account_type = kora::AccountType::SplToken;
     
     // Reclaim
-//     let result = engine.reclaim_account(&account_pubkey, &account_type).await?;
+    let result = engine.reclaim_account(&account_pubkey, &account_type).await?;
     
-//     if let Some(sig) = result.signature {
-//         println!("✓ Reclaim successful!");
-//         println!("Signature: {}", sig);
-//         println!("Reclaimed: {}", utils::format_sol(result.amount_reclaimed));
-//     } else if result.dry_run {
-//         println!("DRY RUN: Would reclaim {}", utils::format_sol(result.amount_reclaimed));
-//     }
-    
-//     Ok(())
-// }
-// Save to database
-if let Some(sig) = result.signature {
-    println!("✓ Reclaim successful!");
-    println!("Signature: {}", sig);
-    println!("Reclaimed: {}", utils::format_sol(result.amount_reclaimed));
-    
-    // Save to database
-    let db = storage::Database::new(&config.database.path)?;
-    
-    db.update_account_status(&pubkey, storage::models::AccountStatus::Reclaimed)?;
-    
-    db.save_reclaim_operation(&storage::models::ReclaimOperation {
-        id: 0,
-        account_pubkey: pubkey.to_string(),
-        reclaimed_amount: result.amount_reclaimed,
-        tx_signature: sig.to_string(),
-        timestamp: chrono::Utc::now(),
-        reason: "Manual CLI reclaim".to_string(),
-    })?;
-    
-    info!("Reclaim operation saved to database");
-    
-    // Send notification if enabled
-    if let Some(notifier) = telegram::AutoNotifier::new(config) {
-        notifier.notify_reclaim_success(&pubkey, result.amount_reclaimed).await;
+    if let Some(sig) = result.signature {
+        println!("✓ Reclaim successful!");
+        println!("Signature: {}", sig);
+        println!("Reclaimed: {}", utils::format_sol(result.amount_reclaimed));
+        
+        // Save to database
+        let db = storage::Database::new(&config.database.path)?;
+        
+        db.update_account_status(&pubkey, storage::models::AccountStatus::Reclaimed)?;
+        
+        db.save_reclaim_operation(&storage::models::ReclaimOperation {
+            id: 0, // Will be auto-generated
+            account_pubkey: pubkey.to_string(),
+            reclaimed_amount: result.amount_reclaimed,
+            tx_signature: sig.to_string(),
+            timestamp: chrono::Utc::now(),
+            reason: "Manual CLI reclaim".to_string(),
+        })?;
+        
+        info!("Reclaim operation saved to database");
+        
+        // Send notification if enabled
+        if let Some(notifier) = telegram::AutoNotifier::new(config) {
+            notifier.notify_reclaim_success(&pubkey, result.amount_reclaimed).await;
+        }
+        
+    } else if result.dry_run {
+        println!("DRY RUN: Would reclaim {}", utils::format_sol(result.amount_reclaimed));
     }
     
-} else if result.dry_run {
-    println!("DRY RUN: Would reclaim {}", utils::format_sol(result.amount_reclaimed));
+    Ok(())
 }
 
 // async fn run_auto_service(config: &Config, interval: u64, dry_run: bool) -> error::Result<()> {

@@ -12,15 +12,6 @@ pub struct Config {
     pub telegram: Option<TelegramConfig>,
 }
 
-// #[derive(Debug, Deserialize, Clone)]
-// pub struct TelegramConfig {
-//     pub bot_token: String,
-//     pub authorized_users: Vec<u64>,
-//     #[serde(default)]
-//     pub notifications_enabled: bool,
-//     #[serde(default)]
-//     pub alert_threshold_sol: f64,
-// }
 #[derive(Debug, Deserialize, Clone)]
 pub struct TelegramConfig {
     pub bot_token: String,
@@ -149,7 +140,7 @@ impl Config {
             "processed" => CommitmentLevel::Processed,
             "confirmed" => CommitmentLevel::Confirmed,
             "finalized" => CommitmentLevel::Finalized,
-            _ => CommitmentLevel::Confirmed, // Default
+            _ => CommitmentLevel::Confirmed, 
         };
         
         CommitmentConfig { commitment: level }

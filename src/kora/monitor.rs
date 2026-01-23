@@ -77,16 +77,11 @@ impl KoraMonitor {
             return Ok(false);
         }
         
-        // The last signature in the list is typically the oldest (earliest)
-        // Get the creation transaction (oldest/first)
-        //let oldest_sig = signatures.last().unwrap();
         let oldest_sig = match signatures.last() {
     Some(sig) => sig,
-    None => return Ok(false), // No signatures means not sponsored
+    None => return Ok(false),
 };
 
-        
-        // Skip if the transaction failed
         if oldest_sig.err.is_some() {
             debug!("Creation transaction failed for account {}", pubkey);
             return Ok(false);

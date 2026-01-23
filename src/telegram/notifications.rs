@@ -21,7 +21,6 @@ impl NotificationSystem {
             }
 
             for user_id in &telegram_config.authorized_users {
-                // Determine chat ID from user ID (assuming direct message)
                 let chat_id = ChatId(*user_id as i64);
                 
                 if let Err(e) = self.bot.send_message(chat_id, message).await {

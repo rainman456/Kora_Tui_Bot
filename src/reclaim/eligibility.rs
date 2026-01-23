@@ -37,7 +37,6 @@ impl EligibilityChecker {
             return Ok(false);
         }
         
-        // Check if account exists - if not, nothing to reclaim
         let account = self.rpc_client.get_account(pubkey).await?;
         if account.is_none() {
             debug!("Account {} doesn't exist, nothing to reclaim", pubkey);
@@ -52,7 +51,6 @@ impl EligibilityChecker {
             return Ok(false);
         }
         
-        // Check minimum inactive period based on creation time
         let now = Utc::now();
         let min_inactive = Duration::days(self.config.reclaim.min_inactive_days as i64);
         
@@ -68,7 +66,6 @@ impl EligibilityChecker {
             return Ok(false);
         }
         
-        // Check if account is empty (no meaningful data)
         let min_balance = self.rpc_client.get_minimum_balance_for_rent_exemption(account.data.len())?;
         let is_empty = crate::solana::rent::RentCalculator::is_empty_account(&account, min_balance);
         

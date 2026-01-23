@@ -7,9 +7,7 @@ use crate::utils;
 use crate::telegram::formatters::format_sol_tg;
 
 
-/// Handle commands
 pub async fn answer(bot: Bot, msg: Message, cmd: Command, state: Arc<BotState>) -> ResponseResult<()> {
-    // Check authorization
     let user_id = msg.from().map(|u| u.id.0).unwrap_or(0);
     if let Some(telegram_config) = &state.config.telegram {
         if !telegram_config.authorized_users.is_empty() && !telegram_config.authorized_users.contains(&user_id) {

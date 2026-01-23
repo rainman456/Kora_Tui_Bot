@@ -75,9 +75,7 @@ impl AccountDiscovery {
             
             debug!("Processing batch of {} signatures", signatures.len());
             
-            // Parse each transaction to find account creations
             for sig_info in &signatures {
-                // Skip failed transactions
                 if sig_info.err.is_some() {
                     continue;
                 }
@@ -122,16 +120,14 @@ impl AccountDiscovery {
         let creation_time = DateTime::from_timestamp(block_time, 0)
             .unwrap_or_else(|| Utc::now());
         
-        // Parse transaction message
         let transaction = match &tx.transaction.transaction {
             solana_transaction_status::EncodedTransaction::Json(ui_tx) => ui_tx,
-            _ => return Ok(creations), // Skip non-JSON encodings
+            _ => return Ok(creations),
         };
         
         let message = &transaction.message;
         let account_keys = self.extract_account_keys(message)?;
         
-        // Parse instructions to find account creations
         if let UiMessage::Parsed(parsed_msg) = message {
             for instruction in &parsed_msg.instructions {
                 if let Some(creation) = self.parse_instruction_for_creation(

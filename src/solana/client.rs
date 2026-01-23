@@ -49,7 +49,6 @@ impl SolanaRpcClient {
         match self.client.get_account(pubkey) {
             Ok(account) => Ok(Some(account)),
             Err(e) => {
-                // Account not found is not an error
                 if e.to_string().contains("AccountNotFound") {
                     Ok(None)
                 } else {
@@ -113,9 +112,8 @@ impl SolanaRpcClient {
     ) -> Result<Option<EncodedConfirmedTransactionWithStatusMeta>> {
         self.rate_limit().await;
         
-        // Use JsonParsed to get parsed instruction data for account detection
         let config = RpcTransactionConfig {
-    encoding: Some(UiTransactionEncoding::JsonParsed),  // Changed to JsonParsed
+    encoding: Some(UiTransactionEncoding::JsonParsed),
     commitment: Some(self.client.commitment()),
     max_supported_transaction_version: Some(0),
 };
@@ -159,7 +157,6 @@ impl SolanaRpcClient {
                     last_error = Some(e);
                     
                     if attempt < MAX_RETRIES {
-                        // Exponential backoff
                         let delay = Duration::from_secs(2u64.pow(attempt));
                         tokio::time::sleep(delay).await;
                     }
