@@ -18,10 +18,12 @@ pub async fn answer(bot: Bot, msg: Message, cmd: Command, state: Arc<BotState>) 
 
     match cmd {
         Command::Start => {
-            bot.send_message(
+            let mut req = bot.send_message(
                 msg.chat.id, 
                 format!("👋 *Welcome to Kora Rent Reclaim Bot*\n\nI can help you monitor and reclaim rent from sponsored accounts.\n\nUse /help to see available commands."),
-            ).parse_mode(teloxide::types::ParseMode::Markdown).await?;
+            );
+            req.parse_mode = Some(teloxide::types::ParseMode::MarkdownV2);
+            req.await?;
         }
         Command::Help => {
             bot.send_message(msg.chat.id, Command::descriptions().to_string()).await?;
@@ -39,7 +41,9 @@ pub async fn answer(bot: Bot, msg: Message, cmd: Command, state: Arc<BotState>) 
                 config.reclaim.dry_run,
                 utils::format_pubkey(&config.kora.operator_pubkey)
             );
-            bot.send_message(msg.chat.id, status_msg).parse_mode(teloxide::types::ParseMode::Markdown).await?;
+            let mut req = bot.send_message(msg.chat.id, status_msg);
+            req.parse_mode = Some(teloxide::types::ParseMode::MarkdownV2);
+            req.await?;
         }
         Command::Scan => {
             bot.send_message(msg.chat.id, "🔍 Scanning for sponsored accounts... This may take a moment.").await?;
@@ -89,7 +93,9 @@ pub async fn answer(bot: Bot, msg: Message, cmd: Command, state: Arc<BotState>) 
                             response.push_str(&format!("_...and {} more_", count - display_limit));
                         }
                         
-                        bot.send_message(msg.chat.id, response).parse_mode(teloxide::types::ParseMode::Markdown).await?;
+                        let mut req = bot.send_message(msg.chat.id, response);
+                        req.parse_mode = Some(teloxide::types::ParseMode::MarkdownV2);
+                        req.await?;
                     }
                 }
                 Err(e) => {
@@ -125,7 +131,7 @@ pub async fn answer(bot: Bot, msg: Message, cmd: Command, state: Arc<BotState>) 
                         }
                     }
                     
-                    bot.send_message(
+                    let mut req = bot.send_message(
                         msg.chat.id,
                         format!(
                             "💰 *Eligibility Check*\n\nFound {} eligible accounts.\nEst. reclaimable: {}", 
@@ -133,7 +139,9 @@ pub async fn answer(bot: Bot, msg: Message, cmd: Command, state: Arc<BotState>) 
                             //utils::format_sol(total_reclaimable)
                             format_sol_tg(total_reclaimable)
                         )
-                    ).parse_mode(teloxide::types::ParseMode::Markdown).await?;
+                    );
+                    req.parse_mode = Some(teloxide::types::ParseMode::MarkdownV2);
+                    req.await?;
                 }
                 Err(e) => {
                      bot.send_message(msg.chat.id, format!("❌ Error checking eligibility: {}", e)).await?;
@@ -164,7 +172,9 @@ pub async fn answer(bot: Bot, msg: Message, cmd: Command, state: Arc<BotState>) 
                         format_sol_tg(stats.total_reclaimed),
                         stats.avg_reclaim_amount
                     );
-                    bot.send_message(msg.chat.id, msg_text).parse_mode(teloxide::types::ParseMode::Markdown).await?;
+                    let mut req = bot.send_message(msg.chat.id, msg_text);
+                    req.parse_mode = Some(teloxide::types::ParseMode::MarkdownV2);
+                    req.await?;
                 }
                 Err(e) => {
                     bot.send_message(msg.chat.id, format!("❌ Error fetching stats: {}", e)).await?;
@@ -188,7 +198,9 @@ pub async fn answer(bot: Bot, msg: Message, cmd: Command, state: Arc<BotState>) 
                 if config.reclaim.dry_run { "Yes" } else { "No" },
                 config.database.path
             );
-            bot.send_message(msg.chat.id, settings_msg).parse_mode(teloxide::types::ParseMode::Markdown).await?;
+            let mut req = bot.send_message(msg.chat.id, settings_msg);
+            req.parse_mode = Some(teloxide::types::ParseMode::MarkdownV2);
+            req.await?;
         }
     };
 

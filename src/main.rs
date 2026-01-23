@@ -392,7 +392,7 @@ async fn run_auto_service(config: &Config, interval: u64, dry_run: bool) -> erro
         
         for account_info in &sponsored_accounts {
             if let Ok(true) = eligibility_checker.is_eligible(&account_info.pubkey, account_info.created_at).await {
-                eligible.push((account_info.pubkey, account_info.account_type));
+                eligible.push((account_info.pubkey, account_info.account_type.clone()));
             }
         }
         

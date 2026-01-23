@@ -2,4 +2,4 @@ pub mod monitor;
 pub mod types;
 
 pub use monitor::KoraMonitor;
-pub use types::{SponsoredAccountInfo, AccountType};
+pub use types::AccountType;

@@ -177,11 +177,10 @@ impl AutoNotifier {
     /// Send to all authorized users
     async fn send_to_all(&self, message: &str) {
         for chat_id in &self.chat_ids {
-            if let Err(e) = self.bot
-                .send_message(ChatId(*chat_id), message)
-                .parse_mode(teloxide::types::ParseMode::Markdown)
-                .await
-            {
+            let mut req = self.bot.send_message(ChatId(*chat_id), message);
+            req.parse_mode = Some(teloxide::types::ParseMode::MarkdownV2);
+            
+            if let Err(e) = req.await {
                 error!("Failed to send notification to chat {}: {}", chat_id, e);
             } else {
                 info!("Notification sent to chat {}", chat_id);
