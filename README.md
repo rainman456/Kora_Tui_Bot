@@ -1,34 +1,47 @@
-This is a **Kora Rent-Reclaim Bot** — a Rust tool for automatically reclaiming rent from Solana accounts sponsored by a Kora node.
 
-### What It Does
+The Kora Rent-Reclaim Bot is a Rust-based utility for identifying and reclaiming rent from Solana accounts sponsored by a Kora node.
 
-The bot identifies and recovers SOL locked as rent in accounts created/sponsored by your Kora node. Here's the workflow:
+## Purpose
 
-1. **Account Discovery**: Queries the Solana blockchain transaction history of your Kora operator's fee-payer wallet to find all accounts it sponsored (created via system program or SPL token instructions)
+The system is designed to recover SOL locked as rent in accounts created or funded by a Kora node. It operates by analyzing on-chain transaction data associated with the Kora fee payer and applying configurable eligibility rules before performing any reclaim actions.
 
-2. **Eligibility Checking**: Filters accounts by criteria:
-   - Account is closed/empty 
-   - Inactive for a minimum period (configurable, default 30 days)
-   - Not whitelisted/blacklisted
+## Functional Overview
 
-3. **Automated Reclaim**: Sends transactions to close eligible accounts and transfer rent to your treasury wallet (with dry-run testing and confirmation prompts for safety)
+The bot follows a multi-stage workflow:
 
-4. **Batch Processing**: Handles multiple accounts with rate limiting to avoid RPC throttling
+1. **Account Discovery**
+   The Solana transaction history of the Kora operator’s fee payer is queried to identify transactions that resulted in account creation. Accounts created via the System Program or SPL Token instructions are recorded as Kora-sponsored accounts.
 
-### How It Works
+2. **Eligibility Evaluation**
+   Discovered accounts are evaluated against a set of criteria, including:
 
-The bot uses Solana RPC calls to:
-- Call `getSignaturesForAddress` on your Kora fee-payer to fetch all sponsored transactions
-- Parse each transaction with `getTransaction` to extract created account pubkeys
-- Track these in a SQLite database
-- Periodically scan for eligibility and execute reclaim transactions
+   * The account is closed or contains no meaningful data
+   * The account has been inactive for a configurable minimum period (default: 30 days)
+   * The account is not present in whitelist or blacklist rules
 
-### Key Features
+3. **Rent Reclamation**
+   For accounts that meet all eligibility conditions, the bot constructs and submits transactions to close the account and transfer any recoverable lamports to a configured treasury wallet. Safety mechanisms such as dry-run execution and confirmation prompts are supported.
 
-- ✅ Dry-run mode for safe testing
-- ✅ Comprehensive CLI and TUI (terminal UI using Ratatui)
-- ✅ Automatic service with configurable intervals
-- ✅ Statistics/reporting with JSON export
-- ✅ Rate limiting, logging, and safety features
+4. **Batch-Oriented Processing**
+   Reclaim operations are executed in batches with configurable delays to reduce the risk of RPC rate limiting.
 
-The codebase is organized into modules: CLI commands, Solana client interactions, reclaim logic, storage (database), and a full terminal UI dashboard.
+## Implementation Details
+
+The bot relies on standard Solana RPC interfaces to perform its operations:
+
+* `getSignaturesForAddress` is used to retrieve transactions associated with the Kora fee payer
+* `getTransaction` is used to inspect transaction instructions and extract created account public keys
+* Discovered accounts and their metadata are persisted in a local SQLite database
+* Periodic scans re-evaluate stored accounts and trigger reclaim actions when eligibility criteria are met
+
+## Notable Capabilities
+
+* Dry-run execution for non-destructive testing
+* Command-line interface and terminal-based dashboard built with Ratatui
+* Automated service mode with configurable scan intervals
+* Statistics and reporting with optional JSON export
+* Rate limiting, structured logging, and safety controls
+
+## Code Organization
+
+The codebase is structured into logical modules covering command-line interfaces, Solana RPC interactions, eligibility and reclaim logic, persistent storage, and a terminal user interface for monitoring and control.

@@ -72,13 +72,9 @@ async fn main() {
     }
 }
 
-async fn run_tui(_config: Config) -> error::Result<()> {
-    println!("{}", "TUI not implemented yet - backend only".yellow());
-    println!("Use CLI commands instead:");
-    println!("  {} - Scan for eligible accounts", "kora-reclaim scan --verbose".cyan());
-    println!("  {} - View statistics", "kora-reclaim stats".cyan());
-    println!("  {} - Run automated service", "kora-reclaim auto".cyan());
-    Ok(())
+async fn run_tui(config: Config) -> error::Result<()> {
+    info!("Launching TUI...");
+    tui::run_tui(config).await
 }
 
 

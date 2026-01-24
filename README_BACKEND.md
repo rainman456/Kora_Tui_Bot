@@ -1,293 +1,269 @@
-# Kora Rent-Reclaim Bot - Backend
+# Kora Rent-Reclaim Bot — Backend
 
-Complete backend implementation for automated rent reclamation from Kora-sponsored Solana accounts.
+Backend service for automated discovery, eligibility analysis, and rent reclamation of Kora-sponsored Solana accounts.
 
-## Features
+## Overview
 
-✅ **Account Discovery**: Parses Solana blockchain transaction history to discover accounts sponsored by your Kora node  
-✅ **Eligibility Checking**: Detects closed, empty, and inactive accounts based on configurable criteria  
-✅ **Automated Reclaim**: Safely reclaims rent from eligible accounts (supports System and SPL Token accounts)  
-✅ **Batch Processing**: Process multiple accounts with rate limiting to avoid RPC throttling  
-✅ **Dry-Run Mode**: Test reclaim logic without sending transactions  
-✅ **Safety Features**: Whitelists, blacklists, minimum inactive periods, confirmation prompts  
-✅ **Comprehensive Logging**: Detailed logs with tracing for transparency  
-✅ **Statistics & Reporting**: Track total reclaimed, view history, exportto JSON  
+The Kora Rent-Reclaim Bot is a Rust-based backend system designed to identify Solana accounts sponsored by a Kora node, evaluate their eligibility for rent recovery, and safely reclaim unused SOL to a designated treasury wallet. The system operates using on-chain analysis and standard Solana RPC APIs and is intended for long-running, automated operation with built-in safety controls.
 
-## Prerequisites
+## Capabilities
 
-- Rust 1.70+  (install from [rust-lang.org](https://www.rust-lang.org/))
-- Solana CLI tools (optional, for keypair generation)
-- Access to a Solana RPC endpoint (devnet or mainnet)
-- Your Kora node's fee payer public key
-- Treasury wallet keypair (for receiving reclaimed SOL)
+* **Account Discovery**
+  Identifies accounts sponsored by a Kora node by analyzing the transaction history of the Kora fee payer.
 
-## Quick Start
+* **Eligibility Evaluation**
+  Determines reclaim eligibility based on account state (closed or empty), inactivity duration, and configurable policy rules.
 
-### 1. Clone and Build
+* **Rent Reclamation**
+  Reclaims lamports from eligible System and SPL Token accounts using appropriate Solana instructions.
+
+* **Batch-Oriented Processing**
+  Processes accounts in configurable batches with rate limiting to avoid RPC throttling.
+
+* **Dry-Run Execution**
+  Supports simulation mode for validation without submitting on-chain transactions.
+
+* **Safety Controls**
+  Includes whitelisting, blacklisting, inactivity thresholds, and confirmation prompts.
+
+* **Logging and Observability**
+  Provides structured logging and tracing for auditability and debugging.
+
+* **Statistics and Reporting**
+  Tracks reclaimed amounts, maintains historical records, and supports JSON export.
+
+## Requirements
+
+* Rust 1.70 or later
+* Solana CLI tools (optional, for keypair management)
+* Access to a Solana RPC endpoint (devnet or mainnet)
+* Kora node fee payer public key
+* Treasury wallet keypair for receiving reclaimed SOL
+
+## Build and Initialization
+
+The project is built using Cargo. A release build is recommended for production usage.
 
 ```bash
-cd /path/to/korabot
 cargo build --release
 ```
 
-### 2. Configure
-
-
-## Telegram Notifications
-
-The bot supports automatic notifications for:
-
-- ✅ Scan completion (total accounts found, eligible for reclaim)
-- ✅ Individual reclaim success/failure
-- ✅ Batch processing completion
-- ✅ High-value reclaim alerts (configurable threshold)
-- ❌ Error notifications
-
-### Configuration
-
-Enable notifications in `config.toml`:
-```toml
-[telegram]
-bot_token = "your_bot_token"
-authorized_users = [your_telegram_user_id]
-notifications_enabled = true
-alert_threshold_sol = 0.1  # Alert for reclaims above this amount
-```
-
-### Getting Your Telegram User ID
-
-1. Message [@userinfobot](https://t.me/userinfobot) on Telegram
-2. Copy your numeric ID
-3. Add it to `authorized_users` in config
-
-### Notification Types
-
-- **Scan Complete**: After each scan cycle
-- **High-Value Alert**: When reclaim exceeds threshold
-- **Batch Summary**: After batch processing completes
-- **Errors**: When critical errors occur
-
-
-
-Copy the sample configuration and edit with your details:
-
-```bash
-cp config.toml my-config.toml
-```
-
-Edit `my-config.toml`:
-
-```toml
-[solana]
-rpc_url = "https://api.devnet.solana.com"  # Use your RPC endpoint
-network = "Devnet"  # Or "Mainnet"
-commitment = "confirmed"
-
-[kora]
-# Your Kora node's fee payer pubkey (from signers.toml)
-operator_pubkey = "YOUR_KORA_OPERATOR_PUBKEY_HERE"
-
-# Treasury wallet where reclaimed SOL goes
-treasury_wallet = "YOUR_TREASURY_WALLET_PUBKEY_HERE"
-
-# Path to treasury keypair JSON file
-treasury_keypair_path = "./treasury-keypair.json"
-
-[reclaim]
-# Minimum days account must be inactive before reclaim
-min_inactive_days = 30
-
-# Enable dry-run by default (safe for testing)
-dry_run = true
-
-# Batch processing settings
-batch_size = 10
-batch_delay_ms = 1000
-```
-
-### 3. Initialize Database
+An SQLite database is used to track discovered accounts and reclaim history. The database must be initialized before first use.
 
 ```bash
 cargo run --release -- init
 ```
 
-### 4. Test with Dry-Run
+## Configuration
 
-Scan for eligible accounts without sending transactions:
+Configuration is provided through a TOML file. A sample configuration can be copied and customized as needed.
 
 ```bash
-cargo run --release -- scan --verbose --dry-run
+cp config.toml my-config.toml
 ```
 
-## Usage
+### Example Configuration
 
-### Scan for Eligible Accounts
+```toml
+[solana]
+rpc_url = "https://api.devnet.solana.com"
+network = "Devnet"
+commitment = "confirmed"
+
+[kora]
+operator_pubkey = "YOUR_KORA_OPERATOR_PUBKEY_HERE"
+treasury_wallet = "YOUR_TREASURY_WALLET_PUBKEY_HERE"
+treasury_keypair_path = "./treasury-keypair.json"
+
+[reclaim]
+min_inactive_days = 30
+dry_run = true
+batch_size = 10
+batch_delay_ms = 1000
+```
+
+## Telegram Notifications
+
+The backend supports optional Telegram notifications for operational events and alerts.
+
+### Supported Events
+
+* Completion of scan cycles
+* Individual reclaim success or failure
+* Batch processing summaries
+* High-value reclaim alerts
+* Critical error notifications
+
+### Configuration
+
+```toml
+[telegram]
+bot_token = "your_bot_token"
+authorized_users = [your_telegram_user_id]
+notifications_enabled = true
+alert_threshold_sol = 0.1
+```
+
+Telegram user IDs can be obtained via the `@userinfobot` service.
+
+## Operation Modes
+
+### Scanning
+
+The scan operation analyzes the Kora operator’s transaction history and updates the local database with discovered accounts and eligibility status.
 
 ```bash
-# Basic scan
 cargo run -- scan
-
-# Verbose output with details
 cargo run -- scan --verbose
-
-# Limit number of transactions to scan
 cargo run -- scan --limit 1000
 ```
 
-### Reclaim from Specific Account
+### Reclaiming
+
+Rent can be reclaimed from a specific account or from eligible accounts discovered during scans.
 
 ```bash
-# With confirmation prompt
-cargo run -- reclaim ACCOUNT_PUBKEY_HERE
-
-# Auto-confirm (skip prompt)
-cargo run --reclaim ACCOUNT_PUBKEY_HERE --yes
-
-# Dry-run (simulate without sending)
-cargo run -- reclaim ACCOUNT_PUBKEY_HERE --dry-run
+cargo run -- reclaim ACCOUNT_PUBKEY
+cargo run -- reclaim ACCOUNT_PUBKEY --yes
+cargo run -- reclaim ACCOUNT_PUBKEY --dry-run
 ```
 
-### Run Automated Service
+### Automated Service Mode
+
+The bot can be run as a long-lived service that periodically scans and reclaims accounts.
 
 ```bash
-# Check every hour (3600 seconds)
 cargo run -- auto --interval 3600
-
-# Dry-run mode
 cargo run -- auto --interval 3600 --dry-run
 ```
 
-Press `Ctrl+C` to stop the service.
+### Statistics
 
-### View Statistics
+Operational statistics and reclaim history can be queried at any time.
 
 ```bash
-# Table format (default)
 cargo run -- stats
-
-# JSON format
 cargo run -- stats --format json
 ```
 
 ## Configuration Reference
 
-### Solana Settings
+### Solana
 
-- `rpc_url`: Solana RPC endpoint URL
-- `network`: "Mainnet", "Devnet", or "Testnet"
-- `commitment`: "processed", "confirmed", or "finalized"
-- `rate_limit_delay_ms`: Delay between RPC calls (milliseconds)
+* `rpc_url`: RPC endpoint URL
+* `network`: Mainnet, Devnet, or Testnet
+* `commitment`: processed, confirmed, or finalized
+* `rate_limit_delay_ms`: Delay between RPC requests
 
-### Kora Settings
+### Kora
 
-- `operator_pubkey`: Public key of Kora fee payer (accounts sponsored by this wallet)
-- `treasury_wallet`: Destination for reclaimed SOL
-- `treasury_keypair_path`: Path to keypair JSON file (signs reclaim transactions)
+* `operator_pubkey`: Fee payer public key used by the Kora node
+* `treasury_wallet`: Destination wallet for reclaimed lamports
+* `treasury_keypair_path`: Keypair used to sign reclaim transactions
 
-### Reclaim Settings
+### Reclaim Policy
 
-- `min_inactive_days`: Minimum days account must be inactive (default: 30)
-- `dry_run`: If true, simulate without sending transactions (default: true)
-- `batch_size`: Number of accounts per batch (default: 10)
-- `batch_delay_ms`: Delay between batches (default: 1000)
-- `scan_interval_seconds`: How often to scan in auto mode (default: 3600)
-- `whitelist`: Array of account pubkeys to NEVER reclaim (protected)
-- `blacklist`: Array of account pubkeys to exclude
+* `min_inactive_days`: Required inactivity period
+* `dry_run`: Enable simulation mode
+* `batch_size`: Number of accounts processed per batch
+* `batch_delay_ms`: Delay between batches
+* `scan_interval_seconds`: Interval for auto mode
+* `whitelist`: Accounts that must never be reclaimed
+* `blacklist`: Accounts excluded from processing
 
-### Database Settings
+### Storage
 
-- `path`: SQLite database file path (default: "./kora_reclaim.db")
+* `path`: SQLite database path
 
-## How It Works
+## Internal Workflow
 
-1. **Discovery**: The bot scans your Kora operator's transaction history on Solana to find sponsored account creations
-2. **Eligibility**: Checks each account against criteria:
-   - Account is closed (doesn't exist) OR
-   - Account is empty (no data, only rent-exempt balance) AND inactive (no recent transactions)
-   - Account is not whitelisted or blacklisted
-   - Minimum inactive period has passed
-3. **Reclaim**: Builds appropriate transactions:
-   - System accounts: Transfer all lamports to treasury
-   - SPL Token accounts: Close account instruction
-4. **Safety**: Dry-run mode, confirmation prompts, rate limiting, comprehensive logging
+1. **Discovery**
+   Transaction history for the Kora operator is scanned to identify sponsored account creation events.
+
+2. **Eligibility Analysis**
+   Each account is evaluated based on existence, balance, activity history, and policy constraints.
+
+3. **Reclamation**
+
+   * System accounts: lamports are transferred to the treasury wallet.
+   * SPL Token accounts: accounts are closed using token program instructions.
+
+4. **Safeguards**
+   Dry-run mode, rate limiting, confirmations, and logging ensure safe operation.
 
 ## Troubleshooting
 
-**"Failed to load configuration"**  
-- Ensure `config.toml` exists in the current directory
-- Check TOML syntax is valid
+**Configuration load failures**
+Verify the presence and syntax of the configuration file.
 
-**"Invalid operator pubkey"**  
-- Verify the pubkey is a valid base58-encoded Solana public key
+**Invalid operator public key**
+Ensure the key is valid base58 and corresponds to the Kora fee payer.
 
-**"Failed to read keypair file"**  
-- Ensure treasury keypair file exists at specified path
-- File should be JSON array of 64 bytes (standard Solana keypair format)
+**Keypair read errors**
+Confirm the treasury keypair file exists and follows Solana’s standard JSON format.
 
-**"RPC rate limit errors"**  
-- Increase `rate_limit_delay_ms` in config
-- Consider using a paid RPC service (Helius, QuickNode, etc.)
+**RPC rate limiting**
+Increase delays or use a higher-capacity RPC provider.
 
-**"No eligible accounts found"**  
-- Most accounts are likely still active or within minimum inactive period
-- Try lowering `min_inactive_days` (with caution)
-- Check that operator pubkey is correct
+**No eligible accounts detected**
+Accounts may still be active or within the inactivity window. Confirm configuration values and operator key accuracy.
 
 ## Development
 
-Build in debug mode:
+Debug builds:
 
 ```bash
 cargo build
 ```
 
-Run tests:
+Test execution:
 
 ```bash
 cargo test
 ```
 
-Enable verbose logging:
+Verbose logging:
 
 ```bash
 RUST_LOG=kora_reclaim=debug cargo run -- scan
 ```
 
-## Safety & Best Practices
+## Safety Considerations
 
-1. **Always test on devnet first** before using on mainnet
-2. **Enable dry-run mode** initially (`dry_run = true` in config)
-3. **Use whitelists** to protect important accounts
-4. **Set reasonable `min_inactive_days`** (30+ recommended)
-5. **Monitor logs** for any unexpected behavior
-6. **Backup your treasury keypair** securely
+* Validate behavior on devnet before mainnet deployment
+* Enable dry-run mode during initial testing
+* Use whitelists to protect critical accounts
+* Configure conservative inactivity thresholds
+* Monitor logs continuously
+* Secure and back up treasury keypairs
 
 ## Architecture
 
 ```
 src/
-├── solana/       # Solana RPC client, account discovery, rent calculations
-├── kora/         # Kora account monitoring and types
-├── reclaim/      # Eligibility checking, reclaim engine, batch processing
-├── storage/      # SQLite database for tracking accounts and operations
-├── cli/          # Command-line interface definitions
-├── config.rs     # Configuration loading and validation
-├── error.rs      # Error types and handling
-├── utils.rs      # Utility functions (formatting, rate limiting, etc.)
-└── main.rs       # Main application entry point and command implementations
+├── solana/       # RPC client, discovery logic, rent calculations
+├── kora/         # Kora-related types and monitoring
+├── reclaim/      # Eligibility checks and reclaim execution
+├── storage/      # SQLite persistence layer
+├── cli/          # Command-line interface
+├── config.rs     # Configuration parsing and validation
+├── error.rs      # Error definitions
+├── utils.rs      # Shared utilities
+└── main.rs       # Application entry point
 ```
 
 ## License
 
-[Your License Here]
+[Specify license]
 
 ## Support
 
 For issues or questions:
-- Check the logs for detailed error information
-- Review this documentation
-- Open an issue on GitHub (if applicable)
+
+* Review application logs
+* Refer to this documentation
+* Open a GitHub issue if applicable
 
 ---
 
-**Important**: This bot directly interacts with Solana accounts and sends transactions. Always understand what it does before running on mainnet with real SOL.
+**Note**: This application submits transactions to the Solana network and can move real funds. Ensure full understanding of its behavior before using it on mainnet.
