@@ -83,6 +83,8 @@ async fn run_tui(_config: Config) -> error::Result<()> {
 
 
 async fn scan_accounts(config: &Config, verbose: bool, dry_run: bool, limit: Option<usize>) -> error::Result<()> {
+    use solana_sdk::pubkey::Pubkey;
+    
     println!("{}", "Scanning for eligible accounts...".cyan());
     
     let rpc_client = solana::SolanaRpcClient::new(
@@ -100,10 +102,8 @@ async fn scan_accounts(config: &Config, verbose: bool, dry_run: bool, limit: Opt
     
     println!("Found {} sponsored accounts", sponsored_accounts.len());
     
-    // Initialize database to cache discovered accounts
     let db = storage::Database::new(&config.database.path)?;
     
-    // Save discovered accounts to database
     for account_info in &sponsored_accounts {
         let db_account = storage::models::SponsoredAccount {
             pubkey: account_info.pubkey.to_string(),
@@ -124,7 +124,8 @@ async fn scan_accounts(config: &Config, verbose: bool, dry_run: bool, limit: Opt
     
     let mut eligible_accounts = Vec::new();
     
-    // First pass: check eligibility
+
+    
     for account_info in &sponsored_accounts {
         let is_eligible = eligibility_checker.is_eligible(&account_info.pubkey, account_info.created_at).await?;
         
@@ -133,7 +134,8 @@ async fn scan_accounts(config: &Config, verbose: bool, dry_run: bool, limit: Opt
         }
     }
     
-    // Second pass: batch fetch balances for eligible accounts using get_multiple_accounts
+
+    
     let mut eligible = Vec::new();
     let mut total_reclaimable = 0u64;
     
@@ -219,10 +221,8 @@ async fn reclaim_account(config: &Config, pubkey: &str, yes: bool, dry_run: bool
         config.solana.rate_limit_delay_ms,
     );
     
-    // Initialize database and check if account exists
     let db = storage::Database::new(&config.database.path)?;
     
-    // Check if account is in database
     if let Ok(Some(db_account)) = db.get_account_by_pubkey(pubkey) {
         info!("Account found in database with status: {:?}", db_account.status);
         println!("Account status in database: {:?}", db_account.status);
@@ -444,7 +444,6 @@ async fn run_auto_service(config: &Config, interval: u64, dry_run: bool) -> erro
         
         info!("Found {} sponsored accounts", sponsored_accounts.len());
         
-        // Initialize database and save discovered accounts
         if let Ok(db) = storage::Database::new(&config.database.path) {
             for account_info in &sponsored_accounts {
                 let db_account = storage::models::SponsoredAccount {
@@ -517,7 +516,6 @@ async fn run_auto_service(config: &Config, interval: u64, dry_run: bool) -> erro
                         solana::rent::RentCalculator::lamports_to_sol(summary.total_reclaimed)
                     );
                     
-                    // Save successful reclaims to database and send notifications
                     if summary.successful > 0 {
                         if let Ok(db) = storage::Database::new(&config.database.path) {
                             for (pubkey, result) in &summary.results {

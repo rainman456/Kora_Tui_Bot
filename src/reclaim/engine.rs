@@ -1,7 +1,6 @@
 use solana_sdk::{
     pubkey::Pubkey,
     signature::{Keypair, Signer, Signature},
-    system_instruction,
     transaction::Transaction,
     instruction::Instruction,
 };
@@ -228,7 +227,7 @@ fn build_close_instruction(
     &self,
     account_pubkey: &Pubkey,
     account_type: &AccountType,
-    balance: u64,
+    _balance: u64,
 ) -> Result<Instruction> {
     match account_type {
         AccountType::System => {
@@ -249,7 +248,6 @@ fn build_close_instruction(
             // 2. The account has zero token balance
             
             // First verify the account can be closed (zero token balance)
-            // Note: This should be checked before calling this function
             
             let close_instruction = spl_token::instruction::close_account(
                 &spl_token::id(),
