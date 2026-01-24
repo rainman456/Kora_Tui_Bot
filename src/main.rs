@@ -7,6 +7,8 @@ mod config;
 mod error;
 mod utils;
 mod telegram;
+mod tui;
+
 
 use clap::Parser;
 use cli::{Cli, Commands};

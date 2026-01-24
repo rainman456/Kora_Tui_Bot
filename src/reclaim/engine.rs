@@ -287,3 +287,23 @@ fn build_close_instruction(
         Ok(results)
     }
 }
+
+
+// Clone implementation for ReclaimEngine (needed for batch processing in TUI)
+impl Clone for ReclaimEngine {
+    fn clone(&self) -> Self {
+        use solana_sdk::signature::Keypair;
+        
+        // Clone the keypair by reconstructing from bytes
+        let signer_bytes = self.signer.to_bytes();
+        let signer = Keypair::from_bytes(&signer_bytes)
+            .expect("Failed to clone keypair");
+        
+        Self {
+            rpc_client: self.rpc_client.clone(),
+            treasury_wallet: self.treasury_wallet,
+            signer,
+            dry_run: self.dry_run,
+        }
+    }
+}

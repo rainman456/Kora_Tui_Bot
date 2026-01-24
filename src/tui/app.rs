@@ -244,13 +244,13 @@ impl App {
     Ok(())
 }
     
-    pub async fn reclaim_selected(&mut self) -> Result<()> {
+   pub async fn reclaim_selected(&mut self) -> Result<()> {
     if self.accounts.is_empty() || self.reclaim_engine.is_none() {
         self.status_message = "No account selected or reclaim engine not available".to_string();
         return Ok(());
     }
     
-    let account = &self.accounts[self.selected_index];
+    let account = self.accounts[self.selected_index].clone(); // Clone to avoid borrow issues
     if !account.eligible {
         self.status_message = "Selected account is not eligible".to_string();
         return Ok(());
@@ -321,8 +321,10 @@ impl App {
         return Ok(());
     }
     
+    // Clone eligible accounts to avoid borrow issues
     let eligible: Vec<_> = self.accounts.iter()
         .filter(|a| a.eligible)
+        .cloned()
         .collect();
     
     if eligible.is_empty() {
@@ -333,8 +335,13 @@ impl App {
     self.is_loading = true;
     self.add_log(&format!("Batch reclaiming {} accounts...", eligible.len()));
     
-    let engine = self.reclaim_engine.as_ref().unwrap().clone();
-    let batch = BatchProcessor::new(engine, self.config.reclaim.batch_size, self.config.reclaim.batch_delay_ms);
+    // Clone engine to avoid borrow issues
+    let engine = self.reclaim_engine.clone().unwrap();
+    let batch = BatchProcessor::new(
+        engine, 
+        self.config.reclaim.batch_size, 
+        self.config.reclaim.batch_delay_ms
+    );
     
     let eligible_list: Vec<_> = eligible.iter()
         .filter_map(|a| {
@@ -429,9 +436,17 @@ pub fn toggle_telegram(&mut self) {
 }
 
 pub async fn test_telegram(&mut self) {
-    if let Some(ref notifier) = self.telegram_notifier {
+    // Clone notifier reference to avoid borrow issues
+    let has_notifier = self.telegram_notifier.is_some();
+    
+    if has_notifier {
         self.add_log("Sending test notification...");
-        notifier.notify_error("🧪 Test notification from TUI").await;
+        
+        // Send notification
+        if let Some(ref notifier) = self.telegram_notifier {
+            notifier.notify_error("🧪 Test notification from TUI").await;
+        }
+        
         self.status_message = "Test notification sent".to_string();
         self.add_log("✓ Test notification sent");
     } else {
