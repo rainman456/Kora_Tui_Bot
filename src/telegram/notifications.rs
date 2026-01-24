@@ -2,11 +2,13 @@ use teloxide::prelude::*;
 use crate::config::Config;
 use tracing::error;
 
+#[allow(dead_code)]
 pub struct NotificationSystem {
     bot: Bot,
     config: Config,
 }
 
+#[allow(dead_code)]
 impl NotificationSystem {
     pub fn new(bot_token: String, config: Config) -> Self {
         let bot = Bot::new(bot_token);

@@ -103,6 +103,68 @@ pub async fn answer(bot: Bot, msg: Message, cmd: Command, state: Arc<BotState>) 
                 }
             }
         }
+        Command::Closed => {
+            bot.send_message(msg.chat.id, "📋 Fetching closed accounts...").await?;
+            
+            let db = state.database.lock().await;
+            match db.get_closed_accounts() {
+                Ok(accounts) => {
+                    if accounts.is_empty() {
+                        bot.send_message(msg.chat.id, "No closed accounts found in database.").await?;
+                    } else {
+                        let count = accounts.len();
+                        let display_limit = std::cmp::min(count, 5);
+                        let mut response = format!("🔒 *Closed Accounts* ({})\\n\\n", count);
+                        
+                        for acc in &accounts[..display_limit] {
+                            response.push_str(&format!("• `{}`\\n  Rent: {} lamports\\n\\n", acc.pubkey, acc.rent_lamports));
+                        }
+                        
+                        if count > display_limit {
+                            response.push_str(&format!("_...and {} more_", count - display_limit));
+                        }
+                        
+                        let mut req = bot.send_message(msg.chat.id, response);
+                        req.parse_mode = Some(teloxide::types::ParseMode::MarkdownV2);
+                        req.await?;
+                    }
+                }
+                Err(e) => {
+                    bot.send_message(msg.chat.id, format!("❌ Database error: {}", e)).await?;
+                }
+            }
+        }
+        Command::Reclaimed => {
+            bot.send_message(msg.chat.id, "📋 Fetching reclaimed accounts...").await?;
+            
+            let db = state.database.lock().await;
+            match db.get_reclaimed_accounts() {
+                Ok(accounts) => {
+                    if accounts.is_empty() {
+                        bot.send_message(msg.chat.id, "No reclaimed accounts found in database.").await?;
+                    } else {
+                        let count = accounts.len();
+                        let display_limit = std::cmp::min(count, 5);
+                        let mut response = format!("✅ *Reclaimed Accounts* ({})\\n\\n", count);
+                        
+                        for acc in &accounts[..display_limit] {
+                            response.push_str(&format!("• `{}`\\n  Rent: {} lamports\\n\\n", acc.pubkey, acc.rent_lamports));
+                        }
+                        
+                        if count > display_limit {
+                            response.push_str(&format!("_...and {} more_", count - display_limit));
+                        }
+                        
+                        let mut req = bot.send_message(msg.chat.id, response);
+                        req.parse_mode = Some(teloxide::types::ParseMode::MarkdownV2);
+                        req.await?;
+                    }
+                }
+                Err(e) => {
+                    bot.send_message(msg.chat.id, format!("❌ Database error: {}", e)).await?;
+                }
+            }
+        }
         Command::Eligible => {
             bot.send_message(msg.chat.id, "🔍 Checking eligibility...").await?;
             

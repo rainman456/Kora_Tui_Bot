@@ -6,6 +6,7 @@ pub fn format_sol_tg(lamports: u64) -> String {
 }
 
 /// Format pubkey for Telegram with monospace
+#[allow(dead_code)]
 pub fn format_pubkey_tg(pubkey: &str) -> String {
     if pubkey.len() <= 12 {
         format!("`{}`", pubkey)
@@ -15,6 +16,7 @@ pub fn format_pubkey_tg(pubkey: &str) -> String {
 }
 
 /// Format account info for Telegram
+#[allow(dead_code)]
 pub fn format_account_tg(
     pubkey: &str,
     balance: u64,

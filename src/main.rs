@@ -100,19 +100,66 @@ async fn scan_accounts(config: &Config, verbose: bool, dry_run: bool, limit: Opt
     
     println!("Found {} sponsored accounts", sponsored_accounts.len());
     
+    // Initialize database to cache discovered accounts
+    let db = storage::Database::new(&config.database.path)?;
+    
+    // Save discovered accounts to database
+    for account_info in &sponsored_accounts {
+        let db_account = storage::models::SponsoredAccount {
+            pubkey: account_info.pubkey.to_string(),
+            created_at: account_info.created_at,
+            closed_at: None,
+            rent_lamports: account_info.rent_lamports,
+            data_size: account_info.data_size,
+            status: storage::models::AccountStatus::Active,
+        };
+        
+        // Ignore errors if account already exists
+        let _ = db.save_account(&db_account);
+    }
+    
+    info!("Saved {} accounts to database", sponsored_accounts.len());
+    
     let eligibility_checker = reclaim::EligibilityChecker::new(rpc_client.clone(), config.clone());
     
-    let mut eligible = Vec::new();
-    let mut total_reclaimable = 0u64;
+    let mut eligible_accounts = Vec::new();
     
+    // First pass: check eligibility
     for account_info in &sponsored_accounts {
         let is_eligible = eligibility_checker.is_eligible(&account_info.pubkey, account_info.created_at).await?;
         
         if is_eligible {
-            // Get current balance
-            if let Ok(balance) = rpc_client.get_balance(&account_info.pubkey).await {
-                total_reclaimable += balance;
-                eligible.push((account_info.clone(), balance));
+            eligible_accounts.push(account_info.clone());
+        }
+    }
+    
+    // Second pass: batch fetch balances for eligible accounts using get_multiple_accounts
+    let mut eligible = Vec::new();
+    let mut total_reclaimable = 0u64;
+    
+    if !eligible_accounts.is_empty() {
+        let pubkeys: Vec<Pubkey> = eligible_accounts.iter().map(|a| a.pubkey).collect();
+        
+        info!("Fetching balances for {} eligible accounts in batch", pubkeys.len());
+        match rpc_client.get_multiple_accounts(&pubkeys).await {
+            Ok(accounts) => {
+                for (account_info, account_opt) in eligible_accounts.iter().zip(accounts.iter()) {
+                    if let Some(account) = account_opt {
+                        let balance = account.lamports;
+                        total_reclaimable += balance;
+                        eligible.push((account_info.clone(), balance));
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("Failed to batch fetch accounts, falling back to individual calls: {}", e);
+                // Fallback to individual calls if batch fails
+                for account_info in &eligible_accounts {
+                    if let Ok(balance) = rpc_client.get_balance(&account_info.pubkey).await {
+                        total_reclaimable += balance;
+                        eligible.push((account_info.clone(), balance));
+                    }
+                }
             }
         }
     }
@@ -171,6 +218,17 @@ async fn reclaim_account(config: &Config, pubkey: &str, yes: bool, dry_run: bool
         config.commitment_config(),
         config.solana.rate_limit_delay_ms,
     );
+    
+    // Initialize database and check if account exists
+    let db = storage::Database::new(&config.database.path)?;
+    
+    // Check if account is in database
+    if let Ok(Some(db_account)) = db.get_account_by_pubkey(pubkey) {
+        info!("Account found in database with status: {:?}", db_account.status);
+        println!("Account status in database: {:?}", db_account.status);
+    } else {
+        info!("Account not found in database, proceeding with reclaim");
+    }
     
     // Check eligibility
     let eligibility_checker = reclaim::EligibilityChecker::new(rpc_client.clone(), config.clone());
@@ -385,6 +443,25 @@ async fn run_auto_service(config: &Config, interval: u64, dry_run: bool) -> erro
         };
         
         info!("Found {} sponsored accounts", sponsored_accounts.len());
+        
+        // Initialize database and save discovered accounts
+        if let Ok(db) = storage::Database::new(&config.database.path) {
+            for account_info in &sponsored_accounts {
+                let db_account = storage::models::SponsoredAccount {
+                    pubkey: account_info.pubkey.to_string(),
+                    created_at: account_info.created_at,
+                    closed_at: None,
+                    rent_lamports: account_info.rent_lamports,
+                    data_size: account_info.data_size,
+                    status: storage::models::AccountStatus::Active,
+                };
+                
+                // Ignore errors if account already exists
+                let _ = db.save_account(&db_account);
+            }
+            
+            info!("Saved {} accounts to database", sponsored_accounts.len());
+        }
         
         // Check eligibility
         let eligibility_checker = reclaim::EligibilityChecker::new(rpc_client.clone(), config.clone());

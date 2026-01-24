@@ -7,11 +7,13 @@ pub struct RentCalculator;
 
 impl RentCalculator {
     /// Calculate rent locked in an account
+    #[allow(dead_code)]
     pub fn calculate_rent(account: &Account) -> u64 {
         account.lamports
     }
     
     /// Calculate total rent across multiple accounts
+    #[allow(dead_code)]
     pub fn calculate_total_rent(accounts: &[(Account, String)]) -> u64 {
         accounts.iter()
             .map(|(account, _)| account.lamports)
@@ -19,11 +21,13 @@ impl RentCalculator {
     }
     
     /// Get account data size
+    #[allow(dead_code)]
     pub fn get_data_size(account: &Account) -> usize {
         account.data.len()
     }
     
     /// Check if account is rent-exempt
+    #[allow(dead_code)]
     pub fn is_rent_exempt(account: &Account, minimum_balance: u64) -> bool {
         account.lamports >= minimum_balance
     }
@@ -41,11 +45,13 @@ impl RentCalculator {
     }
     
     /// Convert SOL to lamports
+    #[allow(dead_code)]
     pub fn sol_to_lamports(sol: f64) -> u64 {
         (sol * LAMPORTS_PER_SOL as f64) as u64
     }
     
     /// Format lamports as SOL string with decimals
+    #[allow(dead_code)]
     pub fn format_sol(lamports: u64) -> String {
         format!("{:.9} SOL", Self::lamports_to_sol(lamports))
     }

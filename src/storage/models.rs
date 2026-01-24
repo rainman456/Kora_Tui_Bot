@@ -30,6 +30,7 @@ pub struct ReclaimOperation {
 }
 
 impl SponsoredAccount {
+    #[allow(dead_code)]
     pub fn new(pubkey: Pubkey, rent_lamports: u64, data_size: usize) -> Self {
         Self {
             pubkey: pubkey.to_string(),
@@ -41,11 +42,13 @@ impl SponsoredAccount {
         }
     }
     
+    #[allow(dead_code)]
     pub fn mark_closed(&mut self) {
         self.status = AccountStatus::Closed;
         self.closed_at = Some(Utc::now());
     }
     
+    #[allow(dead_code)]
     pub fn mark_reclaimed(&mut self) {
         self.status = AccountStatus::Reclaimed;
     }

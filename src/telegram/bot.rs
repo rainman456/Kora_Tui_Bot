@@ -26,6 +26,10 @@ pub enum Command {
     Scan,
     #[command(description = "List recent sponsored accounts")]
     Accounts,
+    #[command(description = "Show closed accounts")]
+    Closed,
+    #[command(description = "Show reclaimed accounts")]
+    Reclaimed,
     #[command(description = "Show accounts eligible for reclaim")]
     Eligible,
     #[command(description = "Show statistics")]
