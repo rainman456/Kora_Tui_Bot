@@ -100,6 +100,13 @@ async fn scan_accounts(config: &Config, verbose: bool, dry_run: bool, limit: Opt
     info!("Discovering sponsored accounts from up to {} transactions", max_txns);
     let sponsored_accounts = monitor.get_sponsored_accounts(max_txns).await?;
     
+    // Calculate and log total locked rent
+    if !sponsored_accounts.is_empty() {
+        if let Ok(total_rent) = monitor.get_total_locked_rent(&sponsored_accounts).await {
+            info!("Total rent locked in sponsored accounts: {} SOL", utils::format_sol(total_rent));
+        }
+    }
+    
     println!("Found {} sponsored accounts", sponsored_accounts.len());
     
     let db = storage::Database::new(&config.database.path)?;
@@ -226,8 +233,27 @@ async fn reclaim_account(config: &Config, pubkey: &str, yes: bool, dry_run: bool
     if let Ok(Some(db_account)) = db.get_account_by_pubkey(pubkey) {
         info!("Account found in database with status: {:?}", db_account.status);
         println!("Account status in database: {:?}", db_account.status);
+        println!("Account status in database: {:?}", db_account.status);
     } else {
         info!("Account not found in database, proceeding with reclaim");
+    }
+    
+    // Verify sponsorship
+    let operator_pubkey = config.operator_pubkey()?;
+    let monitor = kora::KoraMonitor::new(rpc_client.clone(), operator_pubkey);
+    
+    info!("Verifying if account {} is sponsored by Kora...", account_pubkey);
+    if let Ok(is_sponsored) = monitor.is_kora_sponsored(&account_pubkey).await {
+        if is_sponsored {
+            info!("✓ Verified: Account is sponsored by Kora");
+        } else {
+            warn!("⚠️ Warning: Account does not appear to be sponsored by Kora operator");
+            if !yes && !dry_run {
+               if !utils::confirm_action("Account not sponsored by Kora. Continue anyway?") {
+                   return Ok(());
+               }
+            }
+        }
     }
     
     // Check eligibility
@@ -277,6 +303,7 @@ async fn reclaim_account(config: &Config, pubkey: &str, yes: bool, dry_run: bool
     
     if let Some(sig) = result.signature {
         println!("✓ Reclaim successful!");
+        println!("Account: {}", result.account); // Read the previously unused field
         println!("Signature: {}", sig);
         println!("Reclaimed: {}", utils::format_sol(result.amount_reclaimed));
         
@@ -429,8 +456,8 @@ async fn run_auto_service(config: &Config, interval: u64, dry_run: bool) -> erro
         
         let monitor = kora::KoraMonitor::new(rpc_client.clone(), operator_pubkey);
         
-        // Discover accounts
-        let sponsored_accounts = match monitor.get_sponsored_accounts(5000).await {
+        // Discover new accounts (scan)
+        let sponsored_accounts = match monitor.scan_new_accounts(None, 5000).await {
             Ok(accounts) => accounts,
             Err(e) => {
                 warn!("Failed to discover accounts: {}", e);

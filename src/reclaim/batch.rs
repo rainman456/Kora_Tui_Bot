@@ -41,17 +41,25 @@ impl BatchProcessor {
         for (batch_num, chunk) in accounts.chunks(self.batch_size).enumerate() {
             info!("Processing batch {}/{}", batch_num + 1, (accounts.len() + self.batch_size - 1) / self.batch_size);
             
-            for (pubkey, account_type) in chunk {
-                match self.engine.reclaim_account(pubkey, account_type).await {
-                    Ok(result) => {
+            let results = self.engine.batch_reclaim(chunk).await;
+            
+            for (pubkey, result) in match results {
+                Ok(res) => res,
+                Err(e) => {
+                    warn!("Batch reclaim failed for chunk: {}", e);
+                    continue;
+                }
+            } {
+                match result {
+                    Ok(res) => {
                         summary.successful += 1;
-                        summary.total_reclaimed += result.amount_reclaimed;
-                        summary.results.push((*pubkey, Ok(result)));
+                        summary.total_reclaimed += res.amount_reclaimed;
+                        summary.results.push((pubkey, Ok(res)));
                     }
                     Err(e) => {
                         summary.failed += 1;
                         warn!("Failed to reclaim {}: {}", pubkey, e);
-                        summary.results.push((*pubkey, Err(e)));
+                        summary.results.push((pubkey, Err(e)));
                     }
                 }
             }
