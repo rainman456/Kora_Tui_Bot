@@ -21,10 +21,10 @@ pub struct ReclaimResult {
 }
 
 pub struct ReclaimEngine {
-    rpc_client: SolanaRpcClient,
-    treasury_wallet: Pubkey,
-    signer: Keypair,
-    dry_run: bool,
+    pub(crate) rpc_client: SolanaRpcClient,
+    pub(crate) treasury_wallet: Pubkey,
+    pub(crate) signer: Keypair,
+    pub(crate) dry_run: bool,
 }
 
 impl ReclaimEngine {
@@ -307,3 +307,4 @@ impl Clone for ReclaimEngine {
         }
     }
 }
+

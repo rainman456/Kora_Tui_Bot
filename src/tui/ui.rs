@@ -4,7 +4,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{
-    backend::{Backend, CrosstermBackend},
+    backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Alignment},
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -45,49 +45,49 @@ pub async fn run_tui(config: Config) -> Result<()> {
     res
 }
 
-async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
+async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> Result<()> {
     loop {
         terminal.draw(|f| ui(f, app))?;
         
         if event::poll(std::time::Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
                 match key.code {
-    KeyCode::Char('q') | KeyCode::Esc => {
-        app.should_quit = true;
-    }
-    KeyCode::Tab => app.next_screen(),
-    KeyCode::BackTab => app.previous_screen(),
-    KeyCode::Down | KeyCode::Char('j') => app.next_item(),
-    KeyCode::Up | KeyCode::Char('k') => app.previous_item(),
-    KeyCode::Char('s') => {
-        app.scan_accounts().await?;
-    }
-    KeyCode::Char('r') => {
-        app.refresh_stats().await?;
-    }
-    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-        app.should_quit = true;
-    }
-    KeyCode::Char('t') => {
-        // Toggle Telegram
-        app.toggle_telegram();
-    }
-    KeyCode::Char('T') => {
-        // Test Telegram (Shift+T)
-        app.test_telegram().await;
-    }
-    KeyCode::Enter => {
-        if app.current_screen == Screen::Accounts {
-            app.reclaim_selected().await?;
-        }
-    }
-    KeyCode::Char('b') => {
-        if app.current_screen == Screen::Accounts {
-            app.batch_reclaim().await?;
-        }
-    }
-    _ => {}
-}
+                    KeyCode::Char('q') | KeyCode::Esc => {
+                        app.should_quit = true;
+                    }
+                    KeyCode::Tab => app.next_screen(),
+                    KeyCode::BackTab => app.previous_screen(),
+                    KeyCode::Down | KeyCode::Char('j') => app.next_item(),
+                    KeyCode::Up | KeyCode::Char('k') => app.previous_item(),
+                    KeyCode::Char('s') => {
+                        app.scan_accounts().await?;
+                    }
+                    KeyCode::Char('r') => {
+                        app.refresh_stats().await?;
+                    }
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        app.should_quit = true;
+                    }
+                    KeyCode::Char('t') => {
+                        // Toggle Telegram
+                        app.toggle_telegram();
+                    }
+                    KeyCode::Char('T') => {
+                        // Test Telegram (Shift+T)
+                        app.test_telegram().await;
+                    }
+                    KeyCode::Enter => {
+                        if app.current_screen == Screen::Accounts {
+                            app.reclaim_selected().await?;
+                        }
+                    }
+                    KeyCode::Char('b') => {
+                        if app.current_screen == Screen::Accounts {
+                            app.batch_reclaim().await?;
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
         
@@ -99,7 +99,7 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Resul
     Ok(())
 }
 
-fn ui<B: Backend>(f: &mut Frame<B>, app: &App) {
+fn ui(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -124,7 +124,7 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &App) {
     render_status(f, chunks[2], app);
 }
 
-fn render_header<B: Backend>(f: &mut Frame<B>, area: ratatui::layout::Rect, app: &App) {
+fn render_header(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     let title = Line::from(vec![
         Span::raw("⚡ "),
         Span::styled("Kora Rent Reclaim", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
@@ -137,7 +137,7 @@ fn render_header<B: Backend>(f: &mut Frame<B>, area: ratatui::layout::Rect, app:
     f.render_widget(paragraph, area);
 }
 
-fn render_status<B: Backend>(f: &mut Frame<B>, area: ratatui::layout::Rect, app: &App) {
+fn render_status(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     let screens = vec!["Dashboard", "Accounts", "Operations", "Settings"];
     let screen_idx = match app.current_screen {
         Screen::Dashboard => 0,
@@ -175,7 +175,7 @@ fn render_status<B: Backend>(f: &mut Frame<B>, area: ratatui::layout::Rect, app:
     f.render_widget(help, chunks[1]);
 }
 
-fn render_dashboard<B: Backend>(f: &mut Frame<B>, area: ratatui::layout::Rect, app: &App) {
+fn render_dashboard(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -254,7 +254,7 @@ fn render_dashboard<B: Backend>(f: &mut Frame<B>, area: ratatui::layout::Rect, a
     f.render_widget(logs_list, chunks[2]);
 }
 
-fn render_accounts<B: Backend>(f: &mut Frame<B>, area: ratatui::layout::Rect, app: &App) {
+fn render_accounts(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     let header = Row::new(vec!["Pubkey", "Balance", "Status"])
         .style(Style::default().fg(Color::Yellow))
         .bottom_margin(1);
@@ -268,10 +268,9 @@ fn render_accounts<B: Backend>(f: &mut Frame<B>, area: ratatui::layout::Rect, ap
         ]).style(Style::default().fg(color))
     }).collect();
     
-    let table = Table::new(rows)
+    let table = Table::new(rows, [Constraint::Percentage(50), Constraint::Percentage(25), Constraint::Percentage(25)])
         .header(header)
         .block(Block::default().borders(Borders::ALL).title("Accounts (Enter: Reclaim | b: Batch | s: Scan)"))
-        .widths(&[Constraint::Percentage(50), Constraint::Percentage(25), Constraint::Percentage(25)])
         .highlight_style(Style::default().bg(Color::DarkGray));
     
     let mut state = ratatui::widgets::TableState::default();
@@ -279,7 +278,7 @@ fn render_accounts<B: Backend>(f: &mut Frame<B>, area: ratatui::layout::Rect, ap
     f.render_stateful_widget(table, area, &mut state);
 }
 
-fn render_operations<B: Backend>(f: &mut Frame<B>, area: ratatui::layout::Rect, app: &App) {
+fn render_operations(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     let header = Row::new(vec!["Time", "Account", "Amount", "Signature"])
         .style(Style::default().fg(Color::Yellow))
         .bottom_margin(1);
@@ -293,15 +292,22 @@ fn render_operations<B: Backend>(f: &mut Frame<B>, area: ratatui::layout::Rect, 
         ])
     }).collect();
     
-    let table = Table::new(rows)
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Percentage(20),
+            Constraint::Percentage(30),
+            Constraint::Percentage(20),
+            Constraint::Percentage(30)
+        ]
+    )
         .header(header)
-        .block(Block::default().borders(Borders::ALL).title("Reclaim History"))
-        .widths(&[Constraint::Percentage(20), Constraint::Percentage(30), Constraint::Percentage(20), Constraint::Percentage(30)]);
+        .block(Block::default().borders(Borders::ALL).title("Reclaim History"));
     
     f.render_widget(table, area);
 }
 
-fn render_settings<B: Backend>(f: &mut Frame<B>, area: ratatui::layout::Rect, app: &App) {
+fn render_settings(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     let mut settings = vec![
         format!("RPC: {}", app.config.solana.rpc_url),
         format!("Network: {:?}", app.config.solana.network),
