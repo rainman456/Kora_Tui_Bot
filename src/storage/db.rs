@@ -4,6 +4,7 @@ use crate::{
     storage::models::{SponsoredAccount, ReclaimOperation, AccountStatus},
 };
 use chrono::Utc;
+use std::str::FromStr;
 
 pub struct Database {
     conn: Connection,
@@ -45,8 +46,24 @@ impl Database {
             [],
         )?;
         
+        // ✅ NEW: Checkpoints table for tracking scan progress
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS checkpoints (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )",
+            [],
+        )?;
+        
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_status ON sponsored_accounts(status)",
+            [],
+        )?;
+        
+        // ✅ NEW: Index on creation_signature for faster lookups
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_creation_signature ON sponsored_accounts(creation_signature)",
             [],
         )?;
         
@@ -88,10 +105,10 @@ impl Database {
                 rent_lamports: row.get(3)?,
                 data_size: row.get(4)?,
                 status: AccountStatus::Active,
-                creation_signature: row.get(6).ok(),  // ✅ ADD
+                creation_signature: row.get(6).ok(),
                 creation_slot: row.get::<_, Option<i64>>(7).ok()
                     .flatten()
-                    .map(|s| s as u64),  // ✅ ADD
+                    .map(|s| s as u64),
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -115,10 +132,10 @@ impl Database {
                 rent_lamports: row.get(3)?,
                 data_size: row.get(4)?,
                 status: AccountStatus::Closed,
-                creation_signature: row.get(6).ok(),  // ✅ ADD
+                creation_signature: row.get(6).ok(),
                 creation_slot: row.get::<_, Option<i64>>(7).ok()
                     .flatten()
-                    .map(|s| s as u64),  // ✅ ADD
+                    .map(|s| s as u64),
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -142,10 +159,10 @@ impl Database {
                 rent_lamports: row.get(3)?,
                 data_size: row.get(4)?,
                 status: AccountStatus::Reclaimed,
-                creation_signature: row.get(6).ok(),  // ✅ ADD
+                creation_signature: row.get(6).ok(),
                 creation_slot: row.get::<_, Option<i64>>(7).ok()
                     .flatten()
-                    .map(|s| s as u64),  // ✅ ADD
+                    .map(|s| s as u64),
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -177,10 +194,10 @@ impl Database {
                 rent_lamports: row.get(3)?,
                 data_size: row.get(4)?,
                 status,
-                creation_signature: row.get(6).ok(),  // ✅ ADD
+                creation_signature: row.get(6).ok(),
                 creation_slot: row.get::<_, Option<i64>>(7).ok()
                     .flatten()
-                    .map(|s| s as u64),  // ✅ ADD
+                    .map(|s| s as u64),
             })
         })?;
         
@@ -331,6 +348,165 @@ impl Database {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e.into()),
         }
+    }
+    
+    // ✅ NEW: Checkpoint management for incremental scanning
+    
+    /// Save the last processed signature to avoid re-scanning old transactions
+    pub fn save_last_processed_signature(&self, signature: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO checkpoints (key, value, updated_at) 
+             VALUES ('last_signature', ?1, ?2)",
+            params![signature, Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    }
+    
+    /// Get the last processed signature for incremental scanning
+    pub fn get_last_processed_signature(&self) -> Result<Option<solana_sdk::signature::Signature>> {
+        let result: std::result::Result<String, rusqlite::Error> = self.conn.query_row(
+            "SELECT value FROM checkpoints WHERE key = 'last_signature'",
+            [],
+            |row| row.get(0),
+        );
+        
+        match result {
+            Ok(sig_str) => {
+                match solana_sdk::signature::Signature::from_str(&sig_str) {
+                    Ok(sig) => Ok(Some(sig)),
+                    Err(e) => {
+                        tracing::warn!("Invalid signature in checkpoint: {} - {}", sig_str, e);
+                        Ok(None)
+                    }
+                }
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+    
+    /// Save the last processed slot for tracking
+    pub fn save_last_processed_slot(&self, slot: u64) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO checkpoints (key, value, updated_at) 
+             VALUES ('last_slot', ?1, ?2)",
+            params![slot.to_string(), Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    }
+    
+    /// Get the last processed slot
+    pub fn get_last_processed_slot(&self) -> Result<Option<u64>> {
+        let result: std::result::Result<String, rusqlite::Error> = self.conn.query_row(
+            "SELECT value FROM checkpoints WHERE key = 'last_slot'",
+            [],
+            |row| row.get(0),
+        );
+        
+        match result {
+            Ok(slot_str) => Ok(slot_str.parse::<u64>().ok()),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+    
+    /// Check if an account already exists in database (avoid re-processing)
+    pub fn account_exists(&self, pubkey: &str) -> Result<bool> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM sponsored_accounts WHERE pubkey = ?1",
+            [pubkey],
+            |row| row.get(0),
+        )?;
+        
+        Ok(count > 0)
+    }
+    
+    /// Get all accounts (regardless of status) for caching
+    pub fn get_all_accounts(&self) -> Result<Vec<SponsoredAccount>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT pubkey, created_at, closed_at, rent_lamports, data_size, status, creation_signature, creation_slot
+             FROM sponsored_accounts 
+             ORDER BY created_at DESC"
+        )?;
+        
+        let accounts = stmt.query_map([], |row| {
+            let status_str: String = row.get(5)?;
+            let status = match status_str.as_str() {
+                "Active" => AccountStatus::Active,
+                "Closed" => AccountStatus::Closed,
+                "Reclaimed" => AccountStatus::Reclaimed,
+                _ => AccountStatus::Active,
+            };
+            
+            Ok(SponsoredAccount {
+                pubkey: row.get(0)?,
+                created_at: row.get::<_, String>(1)?.parse().unwrap(),
+                closed_at: row.get::<_, Option<String>>(2)?
+                    .map(|s| s.parse().unwrap()),
+                rent_lamports: row.get(3)?,
+                data_size: row.get(4)?,
+                status,
+                creation_signature: row.get(6).ok(),
+                creation_slot: row.get::<_, Option<i64>>(7).ok()
+                    .flatten()
+                    .map(|s| s as u64),
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+        
+        Ok(accounts)
+    }
+    
+    /// Get checkpoint metadata (useful for debugging)
+    pub fn get_checkpoint_info(&self) -> Result<Vec<(String, String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT key, value, updated_at FROM checkpoints ORDER BY updated_at DESC"
+        )?;
+        
+        let checkpoints = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+        
+        Ok(checkpoints)
+    }
+    
+    /// Clear all checkpoints (useful for reset/debugging)
+    pub fn clear_checkpoints(&self) -> Result<()> {
+        self.conn.execute("DELETE FROM checkpoints", [])?;
+        Ok(())
+    }
+    
+    /// Batch save accounts (more efficient than individual saves)
+    pub fn save_accounts_batch(&self, accounts: &[SponsoredAccount]) -> Result<usize> {
+        let tx = self.conn.unchecked_transaction()?;
+        let mut saved = 0;
+        
+        for account in accounts {
+            tx.execute(
+                "INSERT OR REPLACE INTO sponsored_accounts 
+                 (pubkey, created_at, closed_at, rent_lamports, data_size, status, creation_signature, creation_slot) 
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    account.pubkey,
+                    account.created_at.to_rfc3339(),
+                    account.closed_at.map(|dt| dt.to_rfc3339()),
+                    account.rent_lamports,
+                    account.data_size,
+                    format!("{:?}", account.status),
+                    account.creation_signature,
+                    account.creation_slot.map(|s| s as i64),
+                ],
+            )?;
+            saved += 1;
+        }
+        
+        tx.commit()?;
+        Ok(saved)
     }
 }
 

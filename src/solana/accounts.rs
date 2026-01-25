@@ -10,7 +10,7 @@ use crate::{
     error::Result,
     solana::client::SolanaRpcClient,
 };
-use tracing::{info, debug};
+use tracing::{info, debug, warn}; // ✅ Added warn
 use std::str::FromStr;
 use chrono::{DateTime, Utc};
 
@@ -103,6 +103,70 @@ impl AccountDiscovery {
         }
         
         info!("Discovered {} sponsored accounts", all_sponsored.len());
+        Ok(all_sponsored)
+    }
+    
+    /// ✅ NEW: Discover accounts created AFTER a specific signature (incremental scanning)
+    /// This enables efficient incremental updates without re-scanning the entire history
+    pub async fn discover_incremental(
+        &self,
+        since_signature: Signature,
+        max_signatures: usize,
+    ) -> Result<Vec<SponsoredAccountInfo>> {
+        info!("Discovering new sponsored accounts since signature: {}", since_signature);
+        
+        let mut all_sponsored = Vec::new();
+        let mut before_signature: Option<Signature> = None;
+        const BATCH_SIZE: usize = 1000;
+        
+        let mut total_fetched = 0;
+        
+        while total_fetched < max_signatures {
+            let limit = std::cmp::min(BATCH_SIZE, max_signatures - total_fetched);
+            
+            // Fetch signatures UNTIL we reach since_signature (stops at checkpoint)
+            let signatures = self.rpc_client.get_signatures_for_address(
+                &self.fee_payer,
+                before_signature,
+                Some(since_signature), // ✅ Stop here - this is the key difference!
+                limit,
+            ).await?;
+            
+            if signatures.is_empty() {
+                debug!("No new signatures found since checkpoint");
+                break;
+            }
+            
+            debug!("Processing batch of {} new signatures", signatures.len());
+            
+            for sig_info in &signatures {
+                if sig_info.err.is_some() {
+                    continue;
+                }
+                
+                let signature = Signature::from_str(&sig_info.signature)?;
+                
+                // Get full transaction details
+                if let Some(tx) = self.rpc_client.get_transaction(&signature).await? {
+                    let sponsored = self.parse_transaction_for_creations(&tx, signature).await?;
+                    all_sponsored.extend(sponsored);
+                }
+            }
+            
+            total_fetched += signatures.len();
+            
+            // Pagination
+            if let Some(last_sig) = signatures.last() {
+                before_signature = Some(Signature::from_str(&last_sig.signature)?);
+            }
+            
+            // If we got fewer results than requested, we've reached the end
+            if signatures.len() < limit {
+                break;
+            }
+        }
+        
+        info!("Incremental scan discovered {} new sponsored accounts", all_sponsored.len());
         Ok(all_sponsored)
     }
     
@@ -246,33 +310,12 @@ impl AccountDiscovery {
                             }
                         }
                         
-                        // ✅ Handle other programs (inside the Parsed match arm)
+                        // ✅ Handle other programs - BE CONSERVATIVE
+                        // Only track if we're confident this is account creation
                         if program != "system" && program != "spl-token" {
-                            debug!("Found instruction from unknown program: {}", program);
+                            debug!("Found instruction from program: {} - skipping (not System or SPL Token)", program);
                             
-                            // Try to extract account creation from generic instruction
-                            if let Some(parsed_info) = parsed_value.as_object() {
-                                if let Some(info) = parsed_info.get("info").and_then(|v| v.as_object()) {
-                                    if let Some(account_str) = info.get("account")
-                                        .or_else(|| info.get("newAccount"))
-                                        .and_then(|v| v.as_str()) 
-                                    {
-                                        let account = Pubkey::from_str(account_str)?;
-                                        
-                                        return Ok(Some(SponsoredAccountInfo {
-                                            pubkey: account,
-                                            creation_signature: signature,
-                                            creation_slot: slot,
-                                            creation_time,
-                                            initial_balance: 0,
-                                            data_size: 0,
-                                            account_type: AccountType::Other(
-                                                Pubkey::from_str(program).unwrap_or(solana_sdk::system_program::id())
-                                            ),
-                                        }));
-                                    }
-                                }
-                            }
+                          
                         }
                     }
                     UiParsedInstruction::PartiallyDecoded(_) => {
