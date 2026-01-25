@@ -117,6 +117,8 @@ async fn scan_accounts(config: &Config, verbose: bool, dry_run: bool, limit: Opt
             rent_lamports: account_info.rent_lamports,
             data_size: account_info.data_size,
             status: storage::models::AccountStatus::Active,
+            creation_signature: Some(account_info.creation_signature.to_string()),  
+            creation_slot: Some(account_info.creation_slot), 
         };
         
         // Ignore errors if account already exists
@@ -419,13 +421,20 @@ async fn reclaim_account(config: &Config, pubkey: &str, yes: bool, dry_run: bool
 
 async fn run_auto_service(config: &Config, interval: u64, dry_run: bool) -> error::Result<()> {
     println!("{}", "Starting automated reclaim service...".green());
-    println!("Interval: {} seconds", interval);
+    
+   
+    let actual_interval = if interval > 0 {
+        interval
+    } else {
+        config.reclaim.scan_interval_seconds
+    };
+    
+    println!("Scan interval: {} seconds", actual_interval);
     println!("Dry run: {}", dry_run);
     
     let actual_dry_run = dry_run || config.reclaim.dry_run;
-    
-    // Initialize auto-notifier
     let notifier = telegram::AutoNotifier::new(config);
+    
     if notifier.is_some() {
         println!("{}", "✓ Telegram notifications enabled".green());
     }
@@ -447,7 +456,7 @@ async fn run_auto_service(config: &Config, interval: u64, dry_run: bool) -> erro
                 if let Some(ref n) = notifier {
                     n.notify_error(&format!("Failed to get operator pubkey: {}", e)).await;
                 }
-                tokio::time::sleep(tokio::time::Duration::from_secs(interval)).await;
+                 tokio::time::sleep(tokio::time::Duration::from_secs(actual_interval)).await;
                 continue;
             }
         };
@@ -470,15 +479,17 @@ async fn run_auto_service(config: &Config, interval: u64, dry_run: bool) -> erro
         info!("Found {} sponsored accounts", sponsored_accounts.len());
         
         if let Ok(db) = storage::Database::new(&config.database.path) {
-            for account_info in &sponsored_accounts {
-                let db_account = storage::models::SponsoredAccount {
-                    pubkey: account_info.pubkey.to_string(),
-                    created_at: account_info.created_at,
-                    closed_at: None,
-                    rent_lamports: account_info.rent_lamports,
-                    data_size: account_info.data_size,
-                    status: storage::models::AccountStatus::Active,
-                };
+        for account_info in &sponsored_accounts {
+            let db_account = storage::models::SponsoredAccount {
+                pubkey: account_info.pubkey.to_string(),
+                created_at: account_info.created_at,
+                closed_at: None,
+                rent_lamports: account_info.rent_lamports,
+                data_size: account_info.data_size,
+                status: storage::models::AccountStatus::Active,
+                creation_signature: Some(account_info.creation_signature.to_string()), 
+                creation_slot: Some(account_info.creation_slot),  
+            };
                 
                 // Ignore errors if account already exists
                 let _ = db.save_account(&db_account);

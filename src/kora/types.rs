@@ -11,6 +11,9 @@ pub struct SponsoredAccountInfo {
     pub data_size: usize,
     pub account_type: AccountType,
     pub last_activity: Option<DateTime<Utc>>,
+    // ✅ ADD these fields
+    pub creation_signature: solana_sdk::signature::Signature,
+    pub creation_slot: u64,
 }
 
 /// Type of account (determines how to close it)

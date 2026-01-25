@@ -25,7 +25,9 @@ impl Database {
                 closed_at TEXT,
                 rent_lamports INTEGER NOT NULL,
                 data_size INTEGER NOT NULL,
-                status TEXT NOT NULL
+                status TEXT NOT NULL,
+                creation_signature TEXT,
+                creation_slot INTEGER
             )",
             [],
         )?;
@@ -43,7 +45,6 @@ impl Database {
             [],
         )?;
         
-        // Create index for faster status queries
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_status ON sponsored_accounts(status)",
             [],
@@ -55,8 +56,8 @@ impl Database {
     pub fn save_account(&self, account: &SponsoredAccount) -> Result<()> {
         self.conn.execute(
             "INSERT OR REPLACE INTO sponsored_accounts 
-             (pubkey, created_at, closed_at, rent_lamports, data_size, status) 
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+             (pubkey, created_at, closed_at, rent_lamports, data_size, status, creation_signature, creation_slot) 
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 account.pubkey,
                 account.created_at.to_rfc3339(),
@@ -64,6 +65,8 @@ impl Database {
                 account.rent_lamports,
                 account.data_size,
                 format!("{:?}", account.status),
+                account.creation_signature,
+                account.creation_slot.map(|s| s as i64),
             ],
         )?;
         Ok(())
@@ -71,7 +74,7 @@ impl Database {
     
     pub fn get_active_accounts(&self) -> Result<Vec<SponsoredAccount>> {
         let mut stmt = self.conn.prepare(
-            "SELECT pubkey, created_at, closed_at, rent_lamports, data_size, status 
+            "SELECT pubkey, created_at, closed_at, rent_lamports, data_size, status, creation_signature, creation_slot
              FROM sponsored_accounts 
              WHERE status = 'Active'"
         )?;
@@ -85,6 +88,10 @@ impl Database {
                 rent_lamports: row.get(3)?,
                 data_size: row.get(4)?,
                 status: AccountStatus::Active,
+                creation_signature: row.get(6).ok(),  // ✅ ADD
+                creation_slot: row.get::<_, Option<i64>>(7).ok()
+                    .flatten()
+                    .map(|s| s as u64),  // ✅ ADD
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -94,7 +101,7 @@ impl Database {
     
     pub fn get_closed_accounts(&self) -> Result<Vec<SponsoredAccount>> {
         let mut stmt = self.conn.prepare(
-            "SELECT pubkey, created_at, closed_at, rent_lamports, data_size, status 
+            "SELECT pubkey, created_at, closed_at, rent_lamports, data_size, status, creation_signature, creation_slot
              FROM sponsored_accounts 
              WHERE status = 'Closed'"
         )?;
@@ -108,6 +115,10 @@ impl Database {
                 rent_lamports: row.get(3)?,
                 data_size: row.get(4)?,
                 status: AccountStatus::Closed,
+                creation_signature: row.get(6).ok(),  // ✅ ADD
+                creation_slot: row.get::<_, Option<i64>>(7).ok()
+                    .flatten()
+                    .map(|s| s as u64),  // ✅ ADD
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -117,7 +128,7 @@ impl Database {
     
     pub fn get_reclaimed_accounts(&self) -> Result<Vec<SponsoredAccount>> {
         let mut stmt = self.conn.prepare(
-            "SELECT pubkey, created_at, closed_at, rent_lamports, data_size, status 
+            "SELECT pubkey, created_at, closed_at, rent_lamports, data_size, status, creation_signature, creation_slot
              FROM sponsored_accounts 
              WHERE status = 'Reclaimed'"
         )?;
@@ -131,6 +142,10 @@ impl Database {
                 rent_lamports: row.get(3)?,
                 data_size: row.get(4)?,
                 status: AccountStatus::Reclaimed,
+                creation_signature: row.get(6).ok(),  // ✅ ADD
+                creation_slot: row.get::<_, Option<i64>>(7).ok()
+                    .flatten()
+                    .map(|s| s as u64),  // ✅ ADD
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -140,7 +155,7 @@ impl Database {
     
     pub fn get_account_by_pubkey(&self, pubkey: &str) -> Result<Option<SponsoredAccount>> {
         let mut stmt = self.conn.prepare(
-            "SELECT pubkey, created_at, closed_at, rent_lamports, data_size, status 
+            "SELECT pubkey, created_at, closed_at, rent_lamports, data_size, status, creation_signature, creation_slot
              FROM sponsored_accounts 
              WHERE pubkey = ?1"
         )?;
@@ -162,6 +177,10 @@ impl Database {
                 rent_lamports: row.get(3)?,
                 data_size: row.get(4)?,
                 status,
+                creation_signature: row.get(6).ok(),  // ✅ ADD
+                creation_slot: row.get::<_, Option<i64>>(7).ok()
+                    .flatten()
+                    .map(|s| s as u64),  // ✅ ADD
             })
         })?;
         
@@ -291,6 +310,28 @@ impl Database {
             total_reclaimed,
             avg_reclaim_amount: avg_reclaim.unwrap_or(0.0) as u64,
         })
+    }
+    
+    // ✅ ADD NEW METHOD for creation details
+    pub fn get_account_creation_details(&self, pubkey: &str) -> Result<Option<(String, u64)>> {
+        let result = self.conn.query_row(
+            "SELECT creation_signature, creation_slot 
+             FROM sponsored_accounts 
+             WHERE pubkey = ?1 AND creation_signature IS NOT NULL",
+            [pubkey],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)? as u64,
+                ))
+            },
+        );
+        
+        match result {
+            Ok(data) => Ok(Some(data)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 }
 

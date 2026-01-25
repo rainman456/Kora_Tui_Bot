@@ -10,6 +10,8 @@ pub struct SponsoredAccount {
     pub rent_lamports: u64,
     pub data_size: usize,
     pub status: AccountStatus,
+    pub creation_signature: Option<String>,
+    pub creation_slot: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -39,6 +41,8 @@ impl SponsoredAccount {
             rent_lamports,
             data_size,
             status: AccountStatus::Active,
+            creation_signature: None,  
+            creation_slot: None,        
         }
     }
     

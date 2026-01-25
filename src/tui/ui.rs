@@ -255,7 +255,8 @@ fn render_dashboard(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
 }
 
 fn render_accounts(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
-    let header = Row::new(vec!["Pubkey", "Balance", "Status"])
+    // ✅ FIX: Add Created column to the table
+    let header = Row::new(vec!["Pubkey", "Balance", "Created", "Status"])
         .style(Style::default().fg(Color::Yellow))
         .bottom_margin(1);
     
@@ -264,11 +265,22 @@ fn render_accounts(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
         Row::new(vec![
             format!("{}...{}", &acc.pubkey[..8], &acc.pubkey[acc.pubkey.len()-8..]),
             format!("{:.4}", acc.balance as f64 / 1_000_000_000.0),
+            
+            acc.created.format("%m-%d %H:%M").to_string(),
             acc.status.clone(),
         ]).style(Style::default().fg(color))
     }).collect();
     
-    let table = Table::new(rows, [Constraint::Percentage(50), Constraint::Percentage(25), Constraint::Percentage(25)])
+   
+    let table = Table::new(
+        rows, 
+        [
+            Constraint::Percentage(40),  // Pubkey
+            Constraint::Percentage(20),  // Balance
+            Constraint::Percentage(20),  // Created (NEW)
+            Constraint::Percentage(20),  // Status
+        ]
+    )
         .header(header)
         .block(Block::default().borders(Borders::ALL).title("Accounts (Enter: Reclaim | b: Batch | s: Scan)"))
         .highlight_style(Style::default().bg(Color::DarkGray));
@@ -277,7 +289,6 @@ fn render_accounts(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     state.select(Some(app.selected_index));
     f.render_stateful_widget(table, area, &mut state);
 }
-
 fn render_operations(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     let header = Row::new(vec!["Time", "Account", "Amount", "Signature"])
         .style(Style::default().fg(Color::Yellow))

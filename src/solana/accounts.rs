@@ -245,13 +245,44 @@ impl AccountDiscovery {
                                 }
                             }
                         }
+                        
+                        // ✅ Handle other programs (inside the Parsed match arm)
+                        if program != "system" && program != "spl-token" {
+                            debug!("Found instruction from unknown program: {}", program);
+                            
+                            // Try to extract account creation from generic instruction
+                            if let Some(parsed_info) = parsed_value.as_object() {
+                                if let Some(info) = parsed_info.get("info").and_then(|v| v.as_object()) {
+                                    if let Some(account_str) = info.get("account")
+                                        .or_else(|| info.get("newAccount"))
+                                        .and_then(|v| v.as_str()) 
+                                    {
+                                        let account = Pubkey::from_str(account_str)?;
+                                        
+                                        return Ok(Some(SponsoredAccountInfo {
+                                            pubkey: account,
+                                            creation_signature: signature,
+                                            creation_slot: slot,
+                                            creation_time,
+                                            initial_balance: 0,
+                                            data_size: 0,
+                                            account_type: AccountType::Other(
+                                                Pubkey::from_str(program).unwrap_or(solana_sdk::system_program::id())
+                                            ),
+                                        }));
+                                    }
+                                }
+                            }
+                        }
                     }
                     UiParsedInstruction::PartiallyDecoded(_) => {
                         // Skip partially decoded instructions
                     }
                 }
             }
-            _ => {}
+            UiInstruction::Compiled(_) => {
+                // Skip compiled (non-parsed) instructions
+            }
         }
         
         Ok(None)

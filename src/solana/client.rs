@@ -50,7 +50,10 @@ impl SolanaRpcClient {
             Ok(account) => Ok(Some(account)),
             Err(e) => {
                 if e.to_string().contains("AccountNotFound") {
-                    Ok(None)
+                    //Ok(None)
+                     Err(crate::error::ReclaimError::AccountNotFound(
+                        format!("Account {} not found", pubkey)
+                    ).into())
                 } else {
                     Err(e.into())
                 }
@@ -164,6 +167,11 @@ impl SolanaRpcClient {
             }
         }
         
-        Err(last_error.unwrap().into())
+        //Err(last_error.unwrap().into())
+        Err(crate::error::ReclaimError::TransactionFailed(
+            format!("Transaction failed after {} retries: {:?}", 
+                MAX_RETRIES, 
+                last_error.unwrap())
+        ))
     }
 }
