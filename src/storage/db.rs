@@ -312,7 +312,6 @@ impl Database {
         })
     }
     
-    // ✅ ADD NEW METHOD for creation details
     pub fn get_account_creation_details(&self, pubkey: &str) -> Result<Option<(String, u64)>> {
         let result = self.conn.query_row(
             "SELECT creation_signature, creation_slot 
