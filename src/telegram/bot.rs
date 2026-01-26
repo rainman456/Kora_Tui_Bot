@@ -9,6 +9,7 @@ use crate::storage::Database;
 use tracing::{info, error};
 
 /// State shared across all bot handlers
+#[derive(Clone)]
 pub struct BotState {
     pub config: Config,
     pub rpc_client: SolanaRpcClient,
@@ -60,16 +61,20 @@ pub async fn run_telegram_bot(config: Config) -> crate::error::Result<()> {
     
     let database = Arc::new(Mutex::new(Database::new(&config.database.path)?));
     
+    // ✅ FIX: Wrap state in Arc for teloxide dependency injection
     let state = Arc::new(BotState {
         config: config.clone(),
         rpc_client,
         database,
     });
     
-    // ✅ FIX: Correct handler setup for teloxide
-    let handler = Update::filter_message()
-        .filter_command::<Command>()
-        .endpoint(crate::telegram::commands::answer);
+    // ✅ FIX: Use dptree handler with proper typing
+    let handler = dptree::entry()
+        .branch(
+            Update::filter_message()
+                .filter_command::<Command>()
+                .endpoint(crate::telegram::commands::answer)
+        );
 
     Dispatcher::builder(bot, handler)
         .dependencies(dptree::deps![state])
