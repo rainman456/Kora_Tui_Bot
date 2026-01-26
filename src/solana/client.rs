@@ -46,6 +46,7 @@ impl SolanaRpcClient {
     /// Get account information
     pub async fn get_account(&self, pubkey: &Pubkey) -> Result<Option<Account>> {
         self.rate_limit().await;
+    
         match self.client.get_account(pubkey) {
             Ok(account) => Ok(Some(account)),
             Err(e) => {

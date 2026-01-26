@@ -13,7 +13,7 @@ mod tui;
 use clap::Parser;
 use cli::{Cli, Commands};
 use config::Config;
-use tracing::{info, error, warn};
+use tracing::{info, error, warn,debug};
 use colored::*;
 
 #[tokio::main]
@@ -184,6 +184,26 @@ async fn scan_accounts(config: &Config, verbose: bool, dry_run: bool, limit: Opt
     let mut eligible_accounts = Vec::new();
     
     for account_info in &sponsored_accounts {
+        // ✅ USE: is_account_active to check if account still exists before processing
+        let is_active = match rpc_client.is_account_active(&account_info.pubkey).await {
+            Ok(active) => active,
+            Err(e) => {
+                warn!("Failed to check if account {} is active: {}", account_info.pubkey, e);
+                // Assume inactive if check fails
+                false
+            }
+        };
+        
+        if !is_active {
+            debug!("Account {} is no longer active, skipping eligibility check", account_info.pubkey);
+            // Mark as closed in database
+            let _ = db.update_account_status(
+                &account_info.pubkey.to_string(),
+                storage::models::AccountStatus::Closed
+            );
+            continue;
+        }
+        
         // Skip already reclaimed accounts
         if let Some(existing) = existing_accounts.iter().find(|a| a.pubkey == account_info.pubkey.to_string()) {
             if existing.status == storage::models::AccountStatus::Reclaimed {
@@ -1011,7 +1031,6 @@ async fn show_checkpoints(config: &Config) -> error::Result<()> {
     
     println!("{}", "=== Scanning Checkpoints ===".cyan().bold());
     
-    // ✅ USE: get_checkpoint_info
     match db.get_checkpoint_info() {
         Ok(checkpoints) => {
             if checkpoints.is_empty() {
@@ -1057,19 +1076,39 @@ async fn show_checkpoints(config: &Config) -> error::Result<()> {
         }
     }
     
-    // ✅ USE: get_last_processed_slot
     println!("\n{}", "Scanning Progress:".cyan());
     if let Ok(Some(last_slot)) = db.get_last_processed_slot() {
         println!("  Last Processed Slot: {}", last_slot.to_string().cyan());
         
-        // fetch current slot for comparison
+        // ✅ FIX: Actually use the rpc_client
         let rpc_client = solana::SolanaRpcClient::new(
             &config.solana.rpc_url,
             config.commitment_config(),
             config.solana.rate_limit_delay_ms,
         );
         
-        // This would require adding a method to get current slot
+        // Get current slot to compare
+        match rpc_client.client.get_slot() {
+            Ok(current_slot) => {
+                let slots_behind = current_slot.saturating_sub(last_slot);
+                println!("  Current Network Slot: {}", current_slot.to_string().cyan());
+                
+                if slots_behind > 0 {
+                    println!("  Slots Behind: {}", slots_behind.to_string().yellow());
+                    // Roughly 400ms per slot on Solana mainnet
+                    let minutes_behind = (slots_behind as f64 * 0.4) / 60.0;
+                    if minutes_behind >= 1.0 {
+                        println!("  Est. Time Behind: ~{:.1} minutes", minutes_behind);
+                    }
+                } else {
+                    println!("  Status: Up to date ✓");
+                }
+            }
+            Err(e) => {
+                warn!("Could not fetch current slot: {}", e);
+            }
+        }
+        
         println!("  Status: Incremental scanning enabled");
     } else {
         println!("  No slot checkpoint found");

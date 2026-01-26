@@ -13,7 +13,7 @@ use crate::{
     solana::client::SolanaRpcClient,
     utils::RateLimiter, // ✅ USE: Import RateLimiter
 };
-use tracing::{info, debug, warn};
+use tracing::{info, debug};
 use std::str::FromStr;
 use chrono::{DateTime, Utc};
 
@@ -322,9 +322,42 @@ impl AccountDiscovery {
                             }
                         }
                         
-                        if program != "system" && program != "spl-token" {
-                            debug!("Found instruction from program: {} - skipping", program);
-                        }
+                       // After the spl-token check, before the final else
+
+// ✅ USE: Capture other program account creations with AccountType::Other
+if program != "system" && program != "spl-token" {
+    // Try to detect account creation from other programs
+    if let Some(parsed_info) = parsed_value.as_object() {
+        if let Some(info) = parsed_info.get("info").and_then(|v| v.as_object()) {
+            // Look for common account creation patterns
+            let account_key = info.get("account")
+                .or_else(|| info.get("newAccount"))
+                .or_else(|| info.get("address"))
+                .and_then(|v| v.as_str());
+            
+            if let Some(account_str) = account_key {
+                if let Ok(account_pubkey) = Pubkey::from_str(account_str) {
+                    // Try to parse the program ID
+                    if let Ok(program_id) = Pubkey::from_str(program) {
+                        debug!("Detected account creation from program: {}", program);
+                        
+                        return Ok(Some(SponsoredAccountInfo {
+                            pubkey: account_pubkey,
+                            creation_signature: signature,
+                            creation_slot: slot,
+                            creation_time,
+                            initial_balance: info.get("lamports").and_then(|v| v.as_u64()).unwrap_or(0),
+                            data_size: info.get("space").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
+                            account_type: AccountType::Other(program_id), // ✅ USE: Other variant
+                        }));
+                    }
+                }
+            }
+        }
+        
+        debug!("Found instruction from program: {} (no account creation detected)", program);
+    }
+}
                     }
                     UiParsedInstruction::PartiallyDecoded(_) => {}
                 }

@@ -248,7 +248,11 @@ fn build_close_instruction(
             // 2. The account has zero token balance
             
             // First verify the account can be closed (zero token balance)
-            
+             info!(
+                "Building close instruction for SPL Token account {} (program: {})",
+                account_pubkey,
+                account_type.program_id()
+            );
             let close_instruction = spl_token::instruction::close_account(
                 &spl_token::id(),
                 account_pubkey,
@@ -262,7 +266,12 @@ fn build_close_instruction(
         
         AccountType::Other(program_id) => {
             // For other program accounts, we need program-specific logic
-            warn!("Cannot automatically close account owned by program: {}", program_id);
+            //warn!("Cannot automatically close account owned by program: {}", program_id);
+            warn!(
+                "Cannot automatically close account owned by program: {} (ID: {})",
+                program_id,
+                account_type.program_id()
+            );
             Err(crate::error::ReclaimError::NotEligible(
                 format!("Custom program accounts require program-specific close logic for: {}", program_id)
             ))
