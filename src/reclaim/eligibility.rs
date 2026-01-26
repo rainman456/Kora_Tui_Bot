@@ -1,4 +1,4 @@
-// src/reclaim/eligibility.rs - FIXED VERSION
+// src/reclaim/eligibility.rs - FIXED unused parameter
 
 use solana_sdk::pubkey::Pubkey;
 use chrono::{DateTime, Utc, Duration};
@@ -20,14 +20,6 @@ impl EligibilityChecker {
         Self { rpc_client, config }
     }
     
-    /// Check if account is eligible for rent reclaim
-    /// 
-    /// An account is eligible if:
-    /// 1. It exists (has balance to reclaim)
-    /// 2. It's reclaimable by type (NOT System accounts)
-    /// 3. It's not whitelisted or blacklisted
-    /// 4. It has been inactive for the minimum period
-    /// 5. It's empty (no meaningful data) or has only rent balance
     pub async fn is_eligible(&self, pubkey: &Pubkey, created_at: DateTime<Utc>) -> Result<bool> {
         // Check whitelist first (never reclaim)
         if self.is_whitelisted(pubkey) {
@@ -55,7 +47,7 @@ impl EligibilityChecker {
             return Ok(false);
         }
         
-        // ✅ FIX: Check if account type is reclaimable
+        // Check if account type is reclaimable
         let account_type = self.determine_account_type(&account);
         if !self.is_reclaimable_type(&account_type) {
             debug!("Account {} is not reclaimable (type: {:?})", pubkey, account_type);
@@ -64,7 +56,7 @@ impl EligibilityChecker {
         
         // For SPL Token accounts, verify we have close authority
         if matches!(account_type, AccountType::SplToken) {
-            if !self.has_close_authority(pubkey, &account).await? {
+            if !self.has_close_authority(&account).await? {
                 debug!("Account {} - operator doesn't have close authority", pubkey);
                 return Ok(false);
             }
@@ -103,7 +95,6 @@ impl EligibilityChecker {
         Ok(false)
     }
     
-    /// ✅ NEW: Determine account type from account data
     fn determine_account_type(&self, account: &solana_sdk::account::Account) -> AccountType {
         if account.owner == spl_token::id() && account.data.len() == 165 {
             AccountType::SplToken
@@ -114,29 +105,17 @@ impl EligibilityChecker {
         }
     }
     
-    /// ✅ NEW: Check if account type can be reclaimed
     fn is_reclaimable_type(&self, account_type: &AccountType) -> bool {
         match account_type {
-            AccountType::System => {
-                // System accounts are owned by users, not the operator
-                // Even if operator paid rent, they can't reclaim it
-                false
-            }
-            AccountType::SplToken => {
-                // SPL Token accounts CAN be reclaimed IF operator is close authority
-                true
-            }
-            AccountType::Other(_) => {
-                // Program accounts require custom logic - not supported yet
-                false
-            }
+            AccountType::System => false,
+            AccountType::SplToken => true,
+            AccountType::Other(_) => false,
         }
     }
     
-    /// ✅ NEW: Verify operator has close authority for SPL Token account
+    /// ✅ FIX: Removed unused pubkey parameter
     async fn has_close_authority(
         &self,
-        pubkey: &Pubkey,
         account: &solana_sdk::account::Account,
     ) -> Result<bool> {
         // SPL Token account layout:
@@ -173,7 +152,6 @@ impl EligibilityChecker {
         }
     }
     
-    /// Check if account has been inactive (no recent transactions)
     pub async fn check_inactivity(&self, pubkey: &Pubkey) -> Result<bool> {
         let discovery = AccountDiscovery::new(
             self.rpc_client.clone(),
@@ -243,9 +221,9 @@ impl EligibilityChecker {
             ));
         }
         
-        // For SPL Token, check close authority
+        // For SPL Token, check close authority - ✅ FIX: Pass only account
         if matches!(account_type, AccountType::SplToken) {
-            if !self.has_close_authority(pubkey, &account).await? {
+            if !self.has_close_authority(&account).await? {
                 return Ok("Operator is not the close authority for this SPL Token account".to_string());
             }
         }

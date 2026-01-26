@@ -1,11 +1,12 @@
 use teloxide::prelude::*;
+use std::sync::Arc;
 use crate::telegram::bot::BotState;
 
 /// Handle callback queries (inline buttons)
 pub async fn handle_callback(
     bot: Bot, 
     q: CallbackQuery, 
-    state: BotState
+    state: Arc<BotState>
 ) -> ResponseResult<()> {
     let user_id = q.from.id.0;
     if let Some(telegram_config) = &state.config.telegram {
@@ -16,7 +17,6 @@ pub async fn handle_callback(
     }
 
     if let Some(data) = q.data {
-        // Implement callbacks for pagination, confirmation etc.
         bot.answer_callback_query(q.id).text(format!("Received: {}", data)).await?;
     }
 

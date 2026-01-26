@@ -1,4 +1,4 @@
-// src/telegram/bot.rs - FIXED VERSION
+// src/telegram/bot.rs - Complete Rewrite
 
 use teloxide::{prelude::*, utils::command::BotCommands};
 use std::sync::Arc;
@@ -61,23 +61,29 @@ pub async fn run_telegram_bot(config: Config) -> crate::error::Result<()> {
     
     let database = Arc::new(Mutex::new(Database::new(&config.database.path)?));
     
-    // ✅ FIX: Wrap state in Arc for teloxide dependency injection
     let state = Arc::new(BotState {
         config: config.clone(),
         rpc_client,
         database,
     });
-    
-    // ✅ FIX: Use dptree handler with proper typing
-    let handler = dptree::entry()
+
+    // ✅ FIX: Use simple message handler without dptree complexity
+    let handler = Update::filter_message()
         .branch(
-            Update::filter_message()
+            dptree::entry()
                 .filter_command::<Command>()
-                .endpoint(crate::telegram::commands::answer)
+                .endpoint({
+                    let state = Arc::clone(&state);
+                    move |bot: Bot, msg: Message, cmd: Command| {
+                        let state = Arc::clone(&state);
+                        async move {
+                            crate::telegram::commands::handle_command(bot, msg, cmd, state).await
+                        }
+                    }
+                })
         );
 
     Dispatcher::builder(bot, handler)
-        .dependencies(dptree::deps![state])
         .enable_ctrlc_handler()
         .build()
         .dispatch()

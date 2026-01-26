@@ -24,31 +24,42 @@ pub fn format_timestamp(timestamp: &chrono::DateTime<chrono::Utc>) -> String {
 /// Simple rate limiter using token bucket algorithm
 pub struct RateLimiter {
     delay: std::time::Duration,
-    last_call: std::sync::Mutex<Option<std::time::Instant>>,
+    last_call: tokio::sync::Mutex<Option<std::time::Instant>>, // ✅ FIX: Use tokio::sync::Mutex
 }
 
 impl RateLimiter {
     pub fn new(delay_ms: u64) -> Self {
         Self {
             delay: std::time::Duration::from_millis(delay_ms),
-            last_call: std::sync::Mutex::new(None),
+            last_call: tokio::sync::Mutex::new(None), // ✅ FIX: Use tokio::sync::Mutex
         }
     }
     
     pub async fn wait(&self) {
-        let mut last = self.last_call.lock().unwrap();
-        
-        if let Some(last_time) = *last {
-            let elapsed = last_time.elapsed();
-            if elapsed < self.delay {
-                let remaining = self.delay - elapsed;
-                drop(last); // Release lock before sleeping
-                tokio::time::sleep(remaining).await;
-                *self.last_call.lock().unwrap() = Some(std::time::Instant::now());
+        // ✅ FIX: Properly scope the lock to avoid holding it across await
+        let should_sleep = {
+            let mut last = self.last_call.lock().await; // Use .await instead of .unwrap()
+            
+            if let Some(last_time) = *last {
+                let elapsed = last_time.elapsed();
+                if elapsed < self.delay {
+                    let remaining = self.delay - elapsed;
+                    Some(remaining)
+                } else {
+                    *last = Some(std::time::Instant::now());
+                    None
+                }
             } else {
                 *last = Some(std::time::Instant::now());
+                None
             }
-        } else {
+        }; // ✅ Lock is dropped here before we sleep
+        
+        // Now sleep without holding the lock
+        if let Some(remaining) = should_sleep {
+            tokio::time::sleep(remaining).await;
+            // Update last_call after sleeping
+            let mut last = self.last_call.lock().await;
             *last = Some(std::time::Instant::now());
         }
     }

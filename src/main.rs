@@ -1062,7 +1062,7 @@ async fn show_checkpoints(config: &Config) -> error::Result<()> {
     if let Ok(Some(last_slot)) = db.get_last_processed_slot() {
         println!("  Last Processed Slot: {}", last_slot.to_string().cyan());
         
-        // Optionally fetch current slot for comparison
+        // fetch current slot for comparison
         let rpc_client = solana::SolanaRpcClient::new(
             &config.solana.rpc_url,
             config.commitment_config(),
