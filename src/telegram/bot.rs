@@ -1,10 +1,12 @@
+// src/telegram/bot.rs - FIXED VERSION
+
 use teloxide::{prelude::*, utils::command::BotCommands};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use crate::config::Config;
 use crate::solana::SolanaRpcClient;
 use crate::storage::Database;
-use tracing::{info,  error};
+use tracing::{info, error};
 
 /// State shared across all bot handlers
 pub struct BotState {
@@ -64,13 +66,10 @@ pub async fn run_telegram_bot(config: Config) -> crate::error::Result<()> {
         database,
     });
     
-    // Wrap bot to add command handling
-    let handler = dptree::entry()
-        .branch(Update::filter_message()
-            .filter_command::<Command>()
-            .endpoint(crate::telegram::commands::answer))
-        .branch(Update::filter_callback_query()
-            .endpoint(crate::telegram::callbacks::handle_callback));
+    // ✅ FIX: Correct handler setup for teloxide
+    let handler = Update::filter_message()
+        .filter_command::<Command>()
+        .endpoint(crate::telegram::commands::answer);
 
     Dispatcher::builder(bot, handler)
         .dependencies(dptree::deps![state])
