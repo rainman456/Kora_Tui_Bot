@@ -125,6 +125,8 @@ impl BatchSummary {
             self.total_reclaimed,
             crate::solana::rent::RentCalculator::lamports_to_sol(self.total_reclaimed)
         );
+            
+        println!("Success Rate:    {:.1}%", self.success_rate());
         println!("{}", "============================".to_string());
     }
     

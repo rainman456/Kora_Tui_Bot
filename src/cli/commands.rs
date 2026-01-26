@@ -17,6 +17,9 @@ pub struct Cli {
 pub enum Commands {
     /// Launch interactive TUI dashboard
     Tui,
+
+    #[command(name = "daily-summary")]
+    DailySummary,
     
     /// Scan for eligible accounts
     Scan {

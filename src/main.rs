@@ -46,6 +46,11 @@ async fn main() {
         info!("Generating statistics...");
         show_stats(&config, &format).await
     }
+
+    Commands::DailySummary => {
+    info!("Sending daily summary...");
+    send_daily_summary(&config).await
+}
     
     // ✅ NEW: List command using get_all_accounts
     Commands::List { status, format, detailed } => {
@@ -1165,5 +1170,39 @@ async fn initialize(config: &Config) -> error::Result<()> {
     println!("  {} to view checkpoint status", "kora-reclaim checkpoints".yellow());
     println!("  {} to view statistics", "kora-reclaim stats".yellow());
     println!("  {} to launch TUI dashboard", "kora-reclaim tui".yellow());
+    Ok(())
+}
+
+async fn send_daily_summary(config: &Config) -> error::Result<()> {
+    println!("{}", "Generating daily summary...".cyan());
+    
+    let db = storage::Database::new(&config.database.path)?;
+    
+    // Get operations from last 24 hours
+    let all_ops = db.get_reclaim_history(None)?;
+    let now = chrono::Utc::now();
+    let yesterday = now - chrono::Duration::hours(24);
+    
+    let daily_ops: Vec<_> = all_ops.into_iter()
+        .filter(|op| op.timestamp > yesterday)
+        .collect();
+    
+    let total_reclaimed: u64 = daily_ops.iter()
+        .map(|op| op.reclaimed_amount)
+        .sum();
+    
+    let operations_count = daily_ops.len();
+    
+    println!("Operations in last 24h: {}", operations_count);
+    println!("Total reclaimed: {}", utils::format_sol(total_reclaimed));
+    
+    // ✅ USE: notify_daily_summary
+    if let Some(notifier) = telegram::AutoNotifier::new(config) {
+        notifier.notify_daily_summary(total_reclaimed, operations_count).await;
+        println!("{}", "✓ Daily summary sent via Telegram".green());
+    } else {
+        println!("{}", "⚠️  Telegram not configured".yellow());
+    }
+    
     Ok(())
 }

@@ -67,8 +67,8 @@ pub async fn run_telegram_bot(config: Config) -> crate::error::Result<()> {
         database,
     });
 
-    // ✅ FIX: Use simple message handler without dptree complexity
-    let handler = Update::filter_message()
+    // Message handler for commands
+    let command_handler = Update::filter_message()
         .branch(
             dptree::entry()
                 .filter_command::<Command>()
@@ -82,6 +82,23 @@ pub async fn run_telegram_bot(config: Config) -> crate::error::Result<()> {
                     }
                 })
         );
+    
+    // ✅ USE: Callback handler for inline button responses
+    let callback_handler = Update::filter_callback_query()
+        .endpoint({
+            let state = Arc::clone(&state);
+            move |bot: Bot, q: CallbackQuery| {
+                let state = Arc::clone(&state);
+                async move {
+                    crate::telegram::callbacks::handle_callback(bot, q, state).await
+                }
+            }
+        });
+
+    // Combine both handlers
+    let handler = dptree::entry()
+        .branch(command_handler)
+        .branch(callback_handler);
 
     Dispatcher::builder(bot, handler)
         .enable_ctrlc_handler()
