@@ -41,6 +41,29 @@ async fn main() {
             info!("Scanning for eligible accounts...");
             scan_accounts(&config, verbose, dry_run, limit).await
         }
+
+          Commands::Stats { format } => {
+        info!("Generating statistics...");
+        show_stats(&config, &format).await
+    }
+    
+    // ✅ NEW: List command using get_all_accounts
+    Commands::List { status, format, detailed } => {
+        info!("Listing accounts with filter: {}", status);
+        list_accounts(&config, &status, &format, detailed).await
+    }
+    
+    // ✅ NEW: Reset command using clear_checkpoints
+    Commands::Reset { yes } => {
+        info!("Resetting checkpoints...");
+        reset_checkpoints(&config, yes).await
+    }
+    
+    // ✅ NEW: Checkpoints command using get_checkpoint_info
+    Commands::Checkpoints => {
+        info!("Showing checkpoint information...");
+        show_checkpoints(&config).await
+    }
         
         Commands::Reclaim { pubkey, yes, dry_run } => {
             info!("Reclaiming account: {}", pubkey);
@@ -52,10 +75,6 @@ async fn main() {
             run_auto_service(&config, interval, dry_run).await
         }
         
-        Commands::Stats { format } => {
-            info!("Generating statistics...");
-            show_stats(&config, &format).await
-        }
         
         Commands::Init => {
             info!("Initializing...");
@@ -96,6 +115,23 @@ async fn scan_accounts(config: &Config, verbose: bool, dry_run: bool, limit: Opt
     
     let max_txns = limit.unwrap_or(5000);
     info!("Discovering sponsored accounts from up to {} transactions", max_txns);
+    
+    let db = storage::Database::new(&config.database.path)?;
+    
+    // ✅ USE: get_all_accounts to cache existing accounts and avoid re-processing
+    let existing_accounts = db.get_all_accounts()?;
+    info!("Found {} existing accounts in database", existing_accounts.len());
+    
+    let existing_pubkeys: std::collections::HashSet<String> = existing_accounts
+        .iter()
+        .map(|a| a.pubkey.clone())
+        .collect();
+    
+    // ✅ USE: get_last_processed_slot to show scanning progress
+    if let Ok(Some(last_slot)) = db.get_last_processed_slot() {
+        println!("Resuming from last checkpoint at slot: {}", last_slot.to_string().cyan());
+    }
+    
     let sponsored_accounts = monitor.get_sponsored_accounts(max_txns).await?;
     
     // Calculate and log total locked rent
@@ -107,7 +143,9 @@ async fn scan_accounts(config: &Config, verbose: bool, dry_run: bool, limit: Opt
     
     println!("Found {} sponsored accounts", sponsored_accounts.len());
     
-    let db = storage::Database::new(&config.database.path)?;
+    // Separate new accounts from existing ones
+    let mut new_accounts = Vec::new();
+    let mut updated_accounts = 0;
     
     for account_info in &sponsored_accounts {
         let db_account = storage::models::SponsoredAccount {
@@ -117,31 +155,48 @@ async fn scan_accounts(config: &Config, verbose: bool, dry_run: bool, limit: Opt
             rent_lamports: account_info.rent_lamports,
             data_size: account_info.data_size,
             status: storage::models::AccountStatus::Active,
-            creation_signature: Some(account_info.creation_signature.to_string()),  
-            creation_slot: Some(account_info.creation_slot), 
+            creation_signature: Some(account_info.creation_signature.to_string()),
+            creation_slot: Some(account_info.creation_slot),
         };
         
-        // Ignore errors if account already exists
+        if existing_pubkeys.contains(&account_info.pubkey.to_string()) {
+            updated_accounts += 1;
+        } else {
+            new_accounts.push(account_info.clone());
+        }
+        
+        // Save or update account
         let _ = db.save_account(&db_account);
     }
     
-    info!("Saved {} accounts to database", sponsored_accounts.len());
+    info!("Saved {} accounts to database ({} new, {} updated)", 
+        sponsored_accounts.len(), new_accounts.len(), updated_accounts);
+    
+    if !new_accounts.is_empty() {
+        println!("{} {} new accounts discovered", 
+            "✓".green(), 
+            new_accounts.len().to_string().cyan()
+        );
+    }
     
     let eligibility_checker = reclaim::EligibilityChecker::new(rpc_client.clone(), config.clone());
     
     let mut eligible_accounts = Vec::new();
     
-
-    
     for account_info in &sponsored_accounts {
+        // Skip already reclaimed accounts
+        if let Some(existing) = existing_accounts.iter().find(|a| a.pubkey == account_info.pubkey.to_string()) {
+            if existing.status == storage::models::AccountStatus::Reclaimed {
+                continue;
+            }
+        }
+        
         let is_eligible = eligibility_checker.is_eligible(&account_info.pubkey, account_info.created_at).await?;
         
         if is_eligible {
             eligible_accounts.push(account_info.clone());
         }
     }
-    
-
     
     let mut eligible = Vec::new();
     let mut total_reclaimable = 0u64;
@@ -162,7 +217,6 @@ async fn scan_accounts(config: &Config, verbose: bool, dry_run: bool, limit: Opt
             }
             Err(e) => {
                 warn!("Failed to batch fetch accounts, falling back to individual calls: {}", e);
-                // Fallback to individual calls if batch fails
                 for account_info in &eligible_accounts {
                     if let Ok(balance) = rpc_client.get_balance(&account_info.pubkey).await {
                         total_reclaimable += balance;
@@ -175,34 +229,46 @@ async fn scan_accounts(config: &Config, verbose: bool, dry_run: bool, limit: Opt
     
     // Display results
     println!("\n{}", "=== Scan Results ===".cyan().bold());
-    println!("Total Sponsored:    {}", sponsored_accounts.len());
+    println!("Total Sponsored:      {}", sponsored_accounts.len());
+    println!("Cached (existing):    {}", existing_accounts.len().to_string().yellow());
+    println!("New accounts:         {}", new_accounts.len().to_string().green());
     println!("Eligible for Reclaim: {} ✓", eligible.len().to_string().green());
     println!(
-        "Total Reclaimable:   {}",
-        utils::format_sol(total_reclaimable)
+        "Total Reclaimable:    {}",
+        utils::format_sol(total_reclaimable).cyan()
     );
     
     if verbose && !eligible.is_empty() {
         println!("\n{}", "Eligible Accounts:".yellow());
-        utils::print_table_border(90);
+        utils::print_table_border(120);
         utils::print_table_row(
-            &["Pubkey", "Balance", "Created", "Status"],
-            &[44, 20, 20, 15],
+            &["Pubkey", "Balance", "Created", "Status", "Slot"],
+            &[44, 20, 20, 15, 21],
         );
-        utils::print_table_border(90);
+        utils::print_table_border(120);
         
         for (account, balance) in &eligible {
+            // ✅ USE: get_account_creation_details for verbose output
+            let slot_str = if let Ok(Some((_, creation_slot))) = 
+                db.get_account_creation_details(&account.pubkey.to_string()) 
+            {
+                creation_slot.to_string()
+            } else {
+                account.creation_slot.to_string()
+            };
+            
             utils::print_table_row(
                 &[
                     &account.pubkey.to_string(),
                     &utils::format_sol(*balance),
                     &utils::format_timestamp(&account.created_at),
                     "Eligible",
+                    &slot_str,
                 ],
-                &[44, 20, 20, 15],
+                &[44, 20, 20, 15, 21],
             );
         }
-        utils::print_table_border(90);
+        utils::print_table_border(120);
     }
     
     if dry_run && !eligible.is_empty() {
@@ -233,9 +299,21 @@ async fn reclaim_account(config: &Config, pubkey: &str, yes: bool, dry_run: bool
     if let Ok(Some(db_account)) = db.get_account_by_pubkey(pubkey) {
         info!("Account found in database with status: {:?}", db_account.status);
         println!("Account status in database: {:?}", db_account.status);
-        println!("Account status in database: {:?}", db_account.status);
+        
+        // ✅ USE: get_account_creation_details to show when account was created
+        if let Ok(Some((creation_sig, creation_slot))) = db.get_account_creation_details(pubkey) {
+            println!("Created at slot: {} (signature: {})", 
+                creation_slot.to_string().cyan(),
+                utils::format_pubkey(&creation_sig)
+            );
+            
+            // Calculate account age
+            let account_age = chrono::Utc::now() - db_account.created_at;
+            println!("Account age: {} days", account_age.num_days().to_string().yellow());
+        }
     } else {
         info!("Account not found in database, proceeding with reclaim");
+        println!("{}", "⚠️  Account not tracked in database".yellow());
     }
     
     // Verify sponsorship
@@ -246,8 +324,10 @@ async fn reclaim_account(config: &Config, pubkey: &str, yes: bool, dry_run: bool
     if let Ok(is_sponsored) = monitor.is_kora_sponsored(&account_pubkey).await {
         if is_sponsored {
             info!("✓ Verified: Account is sponsored by Kora");
+            println!("{}", "✓ Verified: Account is sponsored by Kora".green());
         } else {
             warn!("⚠️ Warning: Account does not appear to be sponsored by Kora operator");
+            println!("{}", "⚠️  Warning: Account not sponsored by Kora operator".yellow());
             if !yes && !dry_run {
                if !utils::confirm_action("Account not sponsored by Kora. Continue anyway?") {
                    return Ok(());
@@ -295,7 +375,6 @@ async fn reclaim_account(config: &Config, pubkey: &str, yes: bool, dry_run: bool
     );
     
     // Determine account type - Default to SplToken since System accounts can't be reclaimed
-    // In production, you should detect the actual account type
     let account_type = kora::AccountType::SplToken;
     
     // Reclaim
@@ -303,17 +382,15 @@ async fn reclaim_account(config: &Config, pubkey: &str, yes: bool, dry_run: bool
     
     if let Some(sig) = result.signature {
         println!("✓ Reclaim successful!");
-        println!("Account: {}", result.account); // Read the previously unused field
+        println!("Account: {}", result.account);
         println!("Signature: {}", sig);
         println!("Reclaimed: {}", utils::format_sol(result.amount_reclaimed));
         
         // Save to database
-        let db = storage::Database::new(&config.database.path)?;
-        
         db.update_account_status(&pubkey, storage::models::AccountStatus::Reclaimed)?;
         
         db.save_reclaim_operation(&storage::models::ReclaimOperation {
-            id: 0, // Will be auto-generated
+            id: 0,
             account_pubkey: pubkey.to_string(),
             reclaimed_amount: result.amount_reclaimed,
             tx_signature: sig.to_string(),
@@ -422,7 +499,6 @@ async fn reclaim_account(config: &Config, pubkey: &str, yes: bool, dry_run: bool
 async fn run_auto_service(config: &Config, interval: u64, dry_run: bool) -> error::Result<()> {
     println!("{}", "Starting automated reclaim service...".green());
     
-   
     let actual_interval = if interval > 0 {
         interval
     } else {
@@ -456,46 +532,78 @@ async fn run_auto_service(config: &Config, interval: u64, dry_run: bool) -> erro
                 if let Some(ref n) = notifier {
                     n.notify_error(&format!("Failed to get operator pubkey: {}", e)).await;
                 }
-                 tokio::time::sleep(tokio::time::Duration::from_secs(actual_interval)).await;
+                tokio::time::sleep(tokio::time::Duration::from_secs(actual_interval)).await;
                 continue;
             }
         };
         
         let monitor = kora::KoraMonitor::new(rpc_client.clone(), operator_pubkey);
         
-        // Discover new accounts (scan)
-        let sponsored_accounts = match monitor.scan_new_accounts(None, 5000).await {
+        // ✅ FIX: Use incremental scanning with checkpoints
+        let db = match storage::Database::new(&config.database.path) {
+            Ok(database) => database,
+            Err(e) => {
+                error!("Failed to open database: {}", e);
+                if let Some(ref n) = notifier {
+                    n.notify_error(&format!("Database error: {}", e)).await;
+                }
+                tokio::time::sleep(tokio::time::Duration::from_secs(actual_interval)).await;
+                continue;
+            }
+        };
+        
+        // ✅ Get last checkpoint signature for incremental scanning
+        let since_signature = match db.get_last_processed_signature() {
+            Ok(sig) => sig,
+            Err(e) => {
+                warn!("Failed to get checkpoint, doing full scan: {}", e);
+                None
+            }
+        };
+        
+        // Discover new accounts (scan incrementally if checkpoint exists)
+        let sponsored_accounts = match monitor.scan_new_accounts(since_signature, 5000).await {
             Ok(accounts) => accounts,
             Err(e) => {
                 warn!("Failed to discover accounts: {}", e);
                 if let Some(ref n) = notifier {
                     n.notify_error(&format!("Account discovery failed: {}", e)).await;
                 }
-                tokio::time::sleep(tokio::time::Duration::from_secs(interval)).await;
+                tokio::time::sleep(tokio::time::Duration::from_secs(actual_interval)).await;
                 continue;
             }
         };
         
         info!("Found {} sponsored accounts", sponsored_accounts.len());
         
-        if let Ok(db) = storage::Database::new(&config.database.path) {
-        for account_info in &sponsored_accounts {
-            let db_account = storage::models::SponsoredAccount {
-                pubkey: account_info.pubkey.to_string(),
-                created_at: account_info.created_at,
-                closed_at: None,
-                rent_lamports: account_info.rent_lamports,
-                data_size: account_info.data_size,
-                status: storage::models::AccountStatus::Active,
-                creation_signature: Some(account_info.creation_signature.to_string()), 
-                creation_slot: Some(account_info.creation_slot),  
-            };
-                
-                // Ignore errors if account already exists
-                let _ = db.save_account(&db_account);
+        // ✅ Use batch save for efficiency
+        if !sponsored_accounts.is_empty() {
+            let db_accounts: Vec<storage::models::SponsoredAccount> = sponsored_accounts
+                .iter()
+                .map(|account_info| storage::models::SponsoredAccount {
+                    pubkey: account_info.pubkey.to_string(),
+                    created_at: account_info.created_at,
+                    closed_at: None,
+                    rent_lamports: account_info.rent_lamports,
+                    data_size: account_info.data_size,
+                    status: storage::models::AccountStatus::Active,
+                    creation_signature: Some(account_info.creation_signature.to_string()),
+                    creation_slot: Some(account_info.creation_slot),
+                })
+                .collect();
+            
+            match db.save_accounts_batch(&db_accounts) {
+                Ok(saved) => info!("Batch saved {} accounts to database", saved),
+                Err(e) => warn!("Failed to batch save accounts: {}", e),
             }
             
-            info!("Saved {} accounts to database", sponsored_accounts.len());
+            // ✅ Update checkpoint with latest signature
+            if let Some(latest_account) = sponsored_accounts.first() {
+                let _ = db.save_last_processed_signature(
+                    &latest_account.creation_signature.to_string()
+                );
+                let _ = db.save_last_processed_slot(latest_account.creation_slot);
+            }
         }
         
         // Check eligibility
@@ -503,6 +611,16 @@ async fn run_auto_service(config: &Config, interval: u64, dry_run: bool) -> erro
         let mut eligible = Vec::new();
         
         for account_info in &sponsored_accounts {
+            // ✅ Check if account already exists to avoid re-processing
+            if let Ok(true) = db.account_exists(&account_info.pubkey.to_string()) {
+                if let Ok(Some(db_account)) = db.get_account_by_pubkey(&account_info.pubkey.to_string()) {
+                    // Skip already reclaimed accounts
+                    if db_account.status == storage::models::AccountStatus::Reclaimed {
+                        continue;
+                    }
+                }
+            }
+            
             if let Ok(true) = eligibility_checker.is_eligible(&account_info.pubkey, account_info.created_at).await {
                 eligible.push((account_info.pubkey, account_info.account_type.clone()));
             }
@@ -524,7 +642,7 @@ async fn run_auto_service(config: &Config, interval: u64, dry_run: bool) -> erro
                     if let Some(ref n) = notifier {
                         n.notify_error(&format!("Failed to load treasury keypair: {}", e)).await;
                     }
-                    tokio::time::sleep(tokio::time::Duration::from_secs(interval)).await;
+                    tokio::time::sleep(tokio::time::Duration::from_secs(actual_interval)).await;
                     continue;
                 }
             };
@@ -553,46 +671,44 @@ async fn run_auto_service(config: &Config, interval: u64, dry_run: bool) -> erro
                     );
                     
                     if summary.successful > 0 {
-                        if let Ok(db) = storage::Database::new(&config.database.path) {
-                            for (pubkey, result) in &summary.results {
-                                if let Ok(reclaim_result) = result {
-                                    if let Some(sig) = reclaim_result.signature {
-                                        // Update account status
-                                        let _ = db.update_account_status(
-                                            &pubkey.to_string(),
-                                            storage::models::AccountStatus::Reclaimed
-                                        );
-                                        
-                                        // Save reclaim operation
-                                        let _ = db.save_reclaim_operation(&storage::models::ReclaimOperation {
-                                            id: 0,
-                                            account_pubkey: pubkey.to_string(),
-                                            reclaimed_amount: reclaim_result.amount_reclaimed,
-                                            tx_signature: sig.to_string(),
-                                            timestamp: chrono::Utc::now(),
-                                            reason: "Automated batch reclaim".to_string(),
-                                        });
-                                        
-                                        // Send individual success notification for high-value reclaims
-                                        if let Some(ref n) = notifier {
-                                            if let Some(tg_config) = &config.telegram {
-                                                n.notify_high_value_reclaim(
-                                                    &pubkey.to_string(),
-                                                    reclaim_result.amount_reclaimed,
-                                                    tg_config.alert_threshold_sol
-                                                ).await;
-                                            }
+                        for (pubkey, result) in &summary.results {
+                            if let Ok(reclaim_result) = result {
+                                if let Some(sig) = reclaim_result.signature {
+                                    // Update account status
+                                    let _ = db.update_account_status(
+                                        &pubkey.to_string(),
+                                        storage::models::AccountStatus::Reclaimed
+                                    );
+                                    
+                                    // Save reclaim operation
+                                    let _ = db.save_reclaim_operation(&storage::models::ReclaimOperation {
+                                        id: 0,
+                                        account_pubkey: pubkey.to_string(),
+                                        reclaimed_amount: reclaim_result.amount_reclaimed,
+                                        tx_signature: sig.to_string(),
+                                        timestamp: chrono::Utc::now(),
+                                        reason: "Automated batch reclaim".to_string(),
+                                    });
+                                    
+                                    // Send individual success notification for high-value reclaims
+                                    if let Some(ref n) = notifier {
+                                        if let Some(tg_config) = &config.telegram {
+                                            n.notify_high_value_reclaim(
+                                                &pubkey.to_string(),
+                                                reclaim_result.amount_reclaimed,
+                                                tg_config.alert_threshold_sol
+                                            ).await;
                                         }
                                     }
-                                } else if let Err(e) = result {
-                                    // Notify failure
-                                    if let Some(ref n) = notifier {
-                                        n.notify_reclaim_failed(&pubkey.to_string(), &e.to_string()).await;
-                                    }
+                                }
+                            } else if let Err(e) = result {
+                                // Notify failure
+                                if let Some(ref n) = notifier {
+                                    n.notify_reclaim_failed(&pubkey.to_string(), &e.to_string()).await;
                                 }
                             }
-                            info!("Saved {} reclaim operations to database", summary.successful);
                         }
+                        info!("Saved {} reclaim operations to database", summary.successful);
                     }
                     
                     // Send batch summary notification
@@ -615,7 +731,7 @@ async fn run_auto_service(config: &Config, interval: u64, dry_run: bool) -> erro
             info!("No eligible accounts found");
         }
         
-        tokio::time::sleep(tokio::time::Duration::from_secs(interval)).await;
+        tokio::time::sleep(tokio::time::Duration::from_secs(actual_interval)).await;
     }
 }
 async fn show_stats(config: &Config, format: &str) -> error::Result<()> {
@@ -623,7 +739,19 @@ async fn show_stats(config: &Config, format: &str) -> error::Result<()> {
     let stats = db.get_stats()?;
     
     if format == "json" {
-        println!("{}", serde_json::to_string_pretty(&stats)?);
+        // ✅ USE: get_checkpoint_info for JSON output
+        let checkpoints = db.get_checkpoint_info().unwrap_or_default();
+        let checkpoint_map: std::collections::HashMap<String, String> = checkpoints
+            .into_iter()
+            .map(|(key, value, _)| (key, value))
+            .collect();
+        
+        let json_output = serde_json::json!({
+            "stats": stats,
+            "checkpoints": checkpoint_map,
+        });
+        
+        println!("{}", serde_json::to_string_pretty(&json_output)?);
         return Ok(());
     }
     
@@ -640,6 +768,46 @@ async fn show_stats(config: &Config, format: &str) -> error::Result<()> {
     println!("  Total SOL:  {}", utils::format_sol(stats.total_reclaimed));
     println!("  Average:    {}", utils::format_sol(stats.avg_reclaim_amount));
     
+    // ✅ USE: get_checkpoint_info to show scanning progress
+    println!("\n{}", "Scanning Progress:".cyan());
+    match db.get_checkpoint_info() {
+        Ok(checkpoints) => {
+            if checkpoints.is_empty() {
+                println!("  No checkpoints found (full scan on next run)");
+            } else {
+                for (key, value, updated_at) in checkpoints {
+                    let display_value = if key == "last_signature" {
+                        utils::format_pubkey(&value)
+                    } else {
+                        value
+                    };
+                    
+                    // Parse and format timestamp
+                    let time_display = if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&updated_at) {
+                        utils::format_timestamp(&dt.with_timezone(&chrono::Utc))
+                    } else {
+                        updated_at
+                    };
+                    
+                    println!("  {}: {} (updated: {})", 
+                        key.replace('_', " ").to_uppercase(),
+                        display_value,
+                        time_display
+                    );
+                }
+            }
+        }
+        Err(e) => {
+            warn!("Failed to get checkpoint info: {}", e);
+            println!("  Error reading checkpoints: {}", e);
+        }
+    }
+    
+    // ✅ USE: get_last_processed_slot for additional context
+    if let Ok(Some(last_slot)) = db.get_last_processed_slot() {
+        println!("  Last Processed Slot: {}", last_slot.to_string().cyan());
+    }
+    
     // Show recent history
     let history = db.get_reclaim_history(Some(10))?;
     if !history.is_empty() {
@@ -652,10 +820,21 @@ async fn show_stats(config: &Config, format: &str) -> error::Result<()> {
         utils::print_table_border(100);
         
         for op in history {
+            // ✅ USE: get_account_creation_details to enrich display
+            let account_details = if let Ok(Some((creation_sig, creation_slot))) = 
+                db.get_account_creation_details(&op.account_pubkey) 
+            {
+                format!(" (created at slot {}, sig: {})", 
+                    creation_slot, 
+                    utils::format_pubkey(&creation_sig))
+            } else {
+                String::new()
+            };
+            
             utils::print_table_row(
                 &[
                     &utils::format_timestamp(&op.timestamp),
-                    &utils::format_pubkey(&op.account_pubkey),
+                    &format!("{}{}", utils::format_pubkey(&op.account_pubkey), account_details),
                     &utils::format_sol(op.reclaimed_amount),
                     &utils::format_pubkey(&op.tx_signature),
                 ],
@@ -668,11 +847,248 @@ async fn show_stats(config: &Config, format: &str) -> error::Result<()> {
     Ok(())
 }
 
+async fn list_accounts(config: &Config, status_filter: &str, format: &str, detailed: bool) -> error::Result<()> {
+    let db = storage::Database::new(&config.database.path)?;
+    
+    // ✅ USE: get_all_accounts to list everything
+    let all_accounts = db.get_all_accounts()?;
+    
+    let filtered_accounts: Vec<_> = match status_filter.to_lowercase().as_str() {
+        "active" => all_accounts.into_iter()
+            .filter(|a| a.status == storage::models::AccountStatus::Active)
+            .collect(),
+        "closed" => all_accounts.into_iter()
+            .filter(|a| a.status == storage::models::AccountStatus::Closed)
+            .collect(),
+        "reclaimed" => all_accounts.into_iter()
+            .filter(|a| a.status == storage::models::AccountStatus::Reclaimed)
+            .collect(),
+        "all" => all_accounts,
+        _ => {
+            println!("{}", "Invalid status filter. Use: active, closed, reclaimed, or all".red());
+            return Ok(());
+        }
+    };
+    
+    if format == "json" {
+        // JSON output
+        let json_data: Vec<serde_json::Value> = filtered_accounts.iter().map(|acc| {
+            let mut obj = serde_json::json!({
+                "pubkey": acc.pubkey,
+                "created_at": acc.created_at.to_rfc3339(),
+                "rent_lamports": acc.rent_lamports,
+                "data_size": acc.data_size,
+                "status": format!("{:?}", acc.status),
+            });
+            
+            if detailed {
+                // ✅ USE: get_account_creation_details for detailed view
+                if let Ok(Some((creation_sig, creation_slot))) = db.get_account_creation_details(&acc.pubkey) {
+                    obj["creation_signature"] = serde_json::json!(creation_sig);
+                    obj["creation_slot"] = serde_json::json!(creation_slot);
+                }
+            }
+            
+            obj
+        }).collect();
+        
+        println!("{}", serde_json::to_string_pretty(&json_data)?);
+        return Ok(());
+    }
+    
+    // Table output
+    println!("{}", format!("=== Tracked Accounts ({}) ===", filtered_accounts.len()).cyan().bold());
+    
+    if filtered_accounts.is_empty() {
+        println!("No accounts found matching filter: {}", status_filter);
+        return Ok(());
+    }
+    
+    if detailed {
+        utils::print_table_border(120);
+        utils::print_table_row(
+            &["Pubkey", "Status", "Created", "Balance", "Slot", "Signature"],
+            &[44, 10, 20, 15, 10, 21],
+        );
+        utils::print_table_border(120);
+        
+        for acc in &filtered_accounts {
+            // ✅ USE: get_account_creation_details for each account
+            let (slot_str, sig_str) = if let Ok(Some((creation_sig, creation_slot))) = 
+                db.get_account_creation_details(&acc.pubkey) 
+            {
+                (creation_slot.to_string(), utils::format_pubkey(&creation_sig))
+            } else {
+                ("N/A".to_string(), "N/A".to_string())
+            };
+            
+            utils::print_table_row(
+                &[
+                    &utils::format_pubkey(&acc.pubkey),
+                    &format!("{:?}", acc.status),
+                    &utils::format_timestamp(&acc.created_at),
+                    &utils::format_sol(acc.rent_lamports),
+                    &slot_str,
+                    &sig_str,
+                ],
+                &[44, 10, 20, 15, 10, 21],
+            );
+        }
+        utils::print_table_border(120);
+    } else {
+        utils::print_table_border(90);
+        utils::print_table_row(
+            &["Pubkey", "Status", "Created", "Balance"],
+            &[44, 12, 20, 14],
+        );
+        utils::print_table_border(90);
+        
+        for acc in &filtered_accounts {
+            utils::print_table_row(
+                &[
+                    &utils::format_pubkey(&acc.pubkey),
+                    &format!("{:?}", acc.status),
+                    &utils::format_timestamp(&acc.created_at),
+                    &utils::format_sol(acc.rent_lamports),
+                ],
+                &[44, 12, 20, 14],
+            );
+        }
+        utils::print_table_border(90);
+    }
+    
+    println!("\nTotal: {} accounts | Active: {} | Closed: {} | Reclaimed: {}",
+        filtered_accounts.len(),
+        filtered_accounts.iter().filter(|a| a.status == storage::models::AccountStatus::Active).count(),
+        filtered_accounts.iter().filter(|a| a.status == storage::models::AccountStatus::Closed).count(),
+        filtered_accounts.iter().filter(|a| a.status == storage::models::AccountStatus::Reclaimed).count(),
+    );
+    
+    Ok(())
+}
+
+async fn reset_checkpoints(config: &Config, yes: bool) -> error::Result<()> {
+    println!("{}", "Resetting scanning checkpoints...".yellow());
+    
+    let db = storage::Database::new(&config.database.path)?;
+    
+    // ✅ USE: get_checkpoint_info to show what will be cleared
+    match db.get_checkpoint_info() {
+        Ok(checkpoints) => {
+            if checkpoints.is_empty() {
+                println!("No checkpoints to clear.");
+                return Ok(());
+            }
+            
+            println!("\nCurrent checkpoints:");
+            for (key, value, updated_at) in &checkpoints {
+                println!("  {} = {} (updated: {})", key, value, updated_at);
+            }
+            
+            if !yes {
+                println!("\n{}", "⚠️  WARNING: This will force a full rescan on the next run!".yellow().bold());
+                if !utils::confirm_action("Are you sure you want to reset all checkpoints?") {
+                    println!("Cancelled");
+                    return Ok(());
+                }
+            }
+            
+            // ✅ USE: clear_checkpoints
+            db.clear_checkpoints()?;
+            println!("{}", "✓ All checkpoints cleared successfully".green());
+            println!("The next scan will be a full scan from the beginning.");
+        }
+        Err(e) => {
+            println!("Error reading checkpoints: {}", e);
+        }
+    }
+    
+    Ok(())
+}
+
+async fn show_checkpoints(config: &Config) -> error::Result<()> {
+    let db = storage::Database::new(&config.database.path)?;
+    
+    println!("{}", "=== Scanning Checkpoints ===".cyan().bold());
+    
+    // ✅ USE: get_checkpoint_info
+    match db.get_checkpoint_info() {
+        Ok(checkpoints) => {
+            if checkpoints.is_empty() {
+                println!("\nNo checkpoints found.");
+                println!("Run {} to start tracking scan progress.", "kora-reclaim scan".yellow());
+                return Ok(());
+            }
+            
+            println!("\n{}", "Active Checkpoints:".cyan());
+            utils::print_table_border(90);
+            utils::print_table_row(
+                &["Key", "Value", "Last Updated"],
+                &[20, 44, 26],
+            );
+            utils::print_table_border(90);
+            
+            for (key, value, updated_at) in checkpoints {
+                let display_value = if key == "last_signature" {
+                    utils::format_pubkey(&value)
+                } else {
+                    value
+                };
+                
+                let time_display = if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&updated_at) {
+                    utils::format_timestamp(&dt.with_timezone(&chrono::Utc))
+                } else {
+                    updated_at
+                };
+                
+                utils::print_table_row(
+                    &[
+                        &key.replace('_', " ").to_uppercase(),
+                        &display_value,
+                        &time_display,
+                    ],
+                    &[20, 44, 26],
+                );
+            }
+            utils::print_table_border(90);
+        }
+        Err(e) => {
+            println!("Error reading checkpoints: {}", e);
+        }
+    }
+    
+    // ✅ USE: get_last_processed_slot
+    println!("\n{}", "Scanning Progress:".cyan());
+    if let Ok(Some(last_slot)) = db.get_last_processed_slot() {
+        println!("  Last Processed Slot: {}", last_slot.to_string().cyan());
+        
+        // Optionally fetch current slot for comparison
+        let rpc_client = solana::SolanaRpcClient::new(
+            &config.solana.rpc_url,
+            config.commitment_config(),
+            config.solana.rate_limit_delay_ms,
+        );
+        
+        // This would require adding a method to get current slot
+        println!("  Status: Incremental scanning enabled");
+    } else {
+        println!("  No slot checkpoint found");
+        println!("  Status: Full scan mode");
+    }
+    
+    println!("\nTip: Use {} to reset checkpoints and force a full rescan", 
+        "kora-reclaim reset".yellow());
+    
+    Ok(())
+}
+
+// Update the initialize function to use checkpoint info
 async fn initialize(config: &Config) -> error::Result<()> {
     println!("{}", "Initializing Kora Rent Reclaim Bot...".green());
-    let _db = storage::Database::new(&config.database.path)?;
+    let db = storage::Database::new(&config.database.path)?;
     println!("{}", "✓ Database initialized".green());
     println!("{}", "✓ Configuration loaded".green());
+    
     println!("\n{}", "Configuration:".cyan());
     println!("  RPC URL:        {}", config.solana.rpc_url);
     println!("  Network:        {:?}", config.solana.network);
@@ -681,8 +1097,33 @@ async fn initialize(config: &Config) -> error::Result<()> {
     println!("  Dry Run:        {}", config.reclaim.dry_run);
     println!("  Min Inactive:   {} days", config.reclaim.min_inactive_days);
     
+    // ✅ USE: get_checkpoint_info in init to show scanning state
+    println!("\n{}", "Scanning State:".cyan());
+    match db.get_checkpoint_info() {
+        Ok(checkpoints) => {
+            if checkpoints.is_empty() {
+                println!("  No checkpoints found (will perform full scan)");
+            } else {
+                println!("  Checkpoints found: {}", checkpoints.len());
+                for (key, value, _) in checkpoints {
+                    let display_value = if key == "last_signature" {
+                        utils::format_pubkey(&value)
+                    } else {
+                        value
+                    };
+                    println!("    {}: {}", key, display_value);
+                }
+            }
+        }
+        Err(e) => {
+            println!("  Error reading checkpoints: {}", e);
+        }
+    }
+    
     println!("\n{}", "Ready to use! Try running:".cyan());
     println!("  {} to scan for eligible accounts", "kora-reclaim scan --verbose".yellow());
+    println!("  {} to list all tracked accounts", "kora-reclaim list --detailed".yellow());
+    println!("  {} to view checkpoint status", "kora-reclaim checkpoints".yellow());
     println!("  {} to view statistics", "kora-reclaim stats".yellow());
     println!("  {} to launch TUI dashboard", "kora-reclaim tui".yellow());
     Ok(())

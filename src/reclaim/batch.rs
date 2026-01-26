@@ -1,8 +1,11 @@
+// src/reclaim/batch.rs - Enhanced with RateLimiter
+
 use solana_sdk::pubkey::Pubkey;
 use crate::{
     error::Result,
     reclaim::engine::{ReclaimEngine, ReclaimResult},
     kora::types::AccountType,
+    utils::RateLimiter, // ✅ USE: Import RateLimiter
 };
 use tracing::{info, warn};
 use std::time::Duration;
@@ -12,6 +15,7 @@ pub struct BatchProcessor {
     engine: ReclaimEngine,
     batch_size: usize,
     batch_delay: Duration,
+    rate_limiter: RateLimiter, // ✅ USE: Add RateLimiter field
 }
 
 impl BatchProcessor {
@@ -20,6 +24,7 @@ impl BatchProcessor {
             engine,
             batch_size,
             batch_delay: Duration::from_millis(batch_delay_ms),
+            rate_limiter: RateLimiter::new(batch_delay_ms), // ✅ USE: new()
         }
     }
     
@@ -40,6 +45,9 @@ impl BatchProcessor {
         // Process in batches
         for (batch_num, chunk) in accounts.chunks(self.batch_size).enumerate() {
             info!("Processing batch {}/{}", batch_num + 1, (accounts.len() + self.batch_size - 1) / self.batch_size);
+            
+            // ✅ USE: wait() - Rate limit before processing each batch
+            self.rate_limiter.wait().await;
             
             let results = self.engine.batch_reclaim(chunk).await;
             

@@ -1,3 +1,5 @@
+// src/solana/accounts.rs - Enhanced with RateLimiter
+
 use solana_sdk::{
     pubkey::Pubkey,
     signature::Signature,
@@ -9,8 +11,9 @@ use solana_transaction_status::{
 use crate::{
     error::Result,
     solana::client::SolanaRpcClient,
+    utils::RateLimiter, // ✅ USE: Import RateLimiter
 };
-use tracing::{info, debug, warn}; // ✅ Added warn
+use tracing::{info, debug, warn};
 use std::str::FromStr;
 use chrono::{DateTime, Utc};
 
@@ -18,6 +21,7 @@ use chrono::{DateTime, Utc};
 pub struct AccountDiscovery {
     rpc_client: SolanaRpcClient,
     fee_payer: Pubkey,
+    rate_limiter: RateLimiter, // ✅ USE: Add RateLimiter field
 }
 
 /// Information about a discovered sponsored account
@@ -36,16 +40,22 @@ pub struct SponsoredAccountInfo {
 pub enum AccountType {
     System,
     SplToken,
-    Other(Pubkey), // Store the program ID
+    Other(Pubkey),
 }
 
 impl AccountDiscovery {
     pub fn new(rpc_client: SolanaRpcClient, fee_payer: Pubkey) -> Self {
-        Self { rpc_client, fee_payer }
+        // Use the RPC client's rate limit delay
+        let rate_limit_ms = rpc_client.rate_limit_delay.as_millis() as u64;
+        
+        Self { 
+            rpc_client, 
+            fee_payer,
+            rate_limiter: RateLimiter::new(rate_limit_ms), // ✅ USE: new()
+        }
     }
     
     /// Discover accounts sponsored by the fee payer from transaction history
-    /// Scans transaction signatures and parses them to find account creations
     pub async fn discover_from_signatures(
         &self,
         max_signatures: usize,
@@ -54,15 +64,18 @@ impl AccountDiscovery {
         
         let mut all_sponsored = Vec::new();
         let mut before_signature: Option<Signature> = None;
-        const BATCH_SIZE: usize = 1000; // Max per RPC call
+        const BATCH_SIZE: usize = 1000;
         
         let mut total_fetched = 0;
         
         while total_fetched < max_signatures {
             let limit = std::cmp::min(BATCH_SIZE, max_signatures - total_fetched);
             
+            // ✅ USE: wait() - Rate limit signature fetches
+            self.rate_limiter.wait().await;
+            
             // Fetch batch of signatures
-            let signatures: Vec<solana_client::rpc_response::RpcConfirmedTransactionStatusWithSignature> = self.rpc_client.get_signatures_for_address(
+            let signatures = self.rpc_client.get_signatures_for_address(
                 &self.fee_payer,
                 before_signature,
                 None,
@@ -81,6 +94,9 @@ impl AccountDiscovery {
                 }
                 
                 let signature = Signature::from_str(&sig_info.signature)?;
+                
+                // ✅ USE: wait() - Rate limit transaction fetches
+                self.rate_limiter.wait().await;
                 
                 // Get full transaction details
                 if let Some(tx) = self.rpc_client.get_transaction(&signature).await? {
@@ -106,8 +122,7 @@ impl AccountDiscovery {
         Ok(all_sponsored)
     }
     
-    /// ✅ NEW: Discover accounts created AFTER a specific signature (incremental scanning)
-    /// This enables efficient incremental updates without re-scanning the entire history
+    /// Discover accounts created AFTER a specific signature (incremental scanning)
     pub async fn discover_incremental(
         &self,
         since_signature: Signature,
@@ -124,11 +139,14 @@ impl AccountDiscovery {
         while total_fetched < max_signatures {
             let limit = std::cmp::min(BATCH_SIZE, max_signatures - total_fetched);
             
-            // Fetch signatures UNTIL we reach since_signature (stops at checkpoint)
+            // ✅ USE: wait() - Rate limit signature fetches
+            self.rate_limiter.wait().await;
+            
+            // Fetch signatures UNTIL we reach since_signature
             let signatures = self.rpc_client.get_signatures_for_address(
                 &self.fee_payer,
                 before_signature,
-                Some(since_signature), // ✅ Stop here - this is the key difference!
+                Some(since_signature),
                 limit,
             ).await?;
             
@@ -145,6 +163,9 @@ impl AccountDiscovery {
                 }
                 
                 let signature = Signature::from_str(&sig_info.signature)?;
+                
+                // ✅ USE: wait() - Rate limit transaction fetches
+                self.rate_limiter.wait().await;
                 
                 // Get full transaction details
                 if let Some(tx) = self.rpc_client.get_transaction(&signature).await? {
@@ -178,7 +199,6 @@ impl AccountDiscovery {
     ) -> Result<Vec<SponsoredAccountInfo>> {
         let mut creations = Vec::new();
         
-        // Extract transaction metadata
         let slot = tx.slot;
         let block_time = tx.block_time.unwrap_or(0);
         let creation_time = DateTime::from_timestamp(block_time, 0)
@@ -209,7 +229,6 @@ impl AccountDiscovery {
         Ok(creations)
     }
     
-    /// Extract account keys from transaction message
     fn extract_account_keys(&self, message: &UiMessage) -> Result<Vec<Pubkey>> {
         match message {
             UiMessage::Parsed(parsed) => {
@@ -227,7 +246,6 @@ impl AccountDiscovery {
         }
     }
     
-    /// Parse an instruction to detect account creation
     async fn parse_instruction_for_creation(
         &self,
         instruction: &solana_transaction_status::UiInstruction,
@@ -241,29 +259,24 @@ impl AccountDiscovery {
         
         match instruction {
             UiInstruction::Parsed(parsed_instr_enum) => {
-                // UiParsedInstruction is an enum that can be Parsed or PartiallyDecoded
                 match parsed_instr_enum {
                     UiParsedInstruction::Parsed(parsed_instr) => {
                         let program = &parsed_instr.program;
                         let parsed_value = &parsed_instr.parsed;
                         
-                        // Check for System program CreateAccount or CreateAccountWithSeed
+                        // Check for System program CreateAccount
                         if program == "system" {
                             if let Some(parsed_info) = parsed_value.as_object() {
                                 let type_option: Option<&str> = parsed_info.get("type").and_then(|v| v.as_str());
                                 if let Some(info_type) = type_option {
                                     if info_type == "createAccount" || info_type == "createAccountWithSeed" {
-                                        // Extract new account pubkey from "info"
                                         let info_option: Option<&serde_json::Map<String, Value>> = parsed_info.get("info").and_then(|v| v.as_object());
                                         if let Some(info) = info_option {
                                             let new_account_option: Option<&str> = info.get("newAccount").and_then(|v| v.as_str());
                                             if let Some(new_account_str) = new_account_option {
                                                 let new_account = Pubkey::from_str(new_account_str)?;
-                                                let lamports_val: Option<u64> = info.get("lamports").and_then(|v| v.as_u64());
-                                                let lamports = lamports_val.unwrap_or(0);
-                                                
-                                                let space_val: Option<u64> = info.get("space").and_then(|v| v.as_u64());
-                                                let space = space_val.unwrap_or(0) as usize;
+                                                let lamports = info.get("lamports").and_then(|v| v.as_u64()).unwrap_or(0);
+                                                let space = info.get("space").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
                                                 
                                                 return Ok(Some(SponsoredAccountInfo {
                                                     pubkey: new_account,
@@ -293,13 +306,12 @@ impl AccountDiscovery {
                                             if let Some(account_str) = account_option {
                                                 let account = Pubkey::from_str(account_str)?;
                                                 
-                                                // SPL Token accounts are typically 165 bytes
                                                 return Ok(Some(SponsoredAccountInfo {
                                                     pubkey: account,
                                                     creation_signature: signature,
                                                     creation_slot: slot,
                                                     creation_time,
-                                                    initial_balance: 0, // Will be set later
+                                                    initial_balance: 0,
                                                     data_size: 165,
                                                     account_type: AccountType::SplToken,
                                                 }));
@@ -310,22 +322,14 @@ impl AccountDiscovery {
                             }
                         }
                         
-                        // ✅ Handle other programs - BE CONSERVATIVE
-                        // Only track if we're confident this is account creation
                         if program != "system" && program != "spl-token" {
-                            debug!("Found instruction from program: {} - skipping (not System or SPL Token)", program);
-                            
-                          
+                            debug!("Found instruction from program: {} - skipping", program);
                         }
                     }
-                    UiParsedInstruction::PartiallyDecoded(_) => {
-                        // Skip partially decoded instructions
-                    }
+                    UiParsedInstruction::PartiallyDecoded(_) => {}
                 }
             }
-            UiInstruction::Compiled(_) => {
-                // Skip compiled (non-parsed) instructions
-            }
+            UiInstruction::Compiled(_) => {}
         }
         
         Ok(None)
@@ -333,12 +337,14 @@ impl AccountDiscovery {
     
     /// Get the last transaction time for an account (for inactivity detection)
     pub async fn get_last_transaction_time(&self, address: &Pubkey) -> Result<Option<DateTime<Utc>>> {
-        // Get the most recent signature for this address
-        let signatures: Vec<solana_client::rpc_response::RpcConfirmedTransactionStatusWithSignature> = self.rpc_client.get_signatures_for_address(
+        // ✅ USE: wait() - Rate limit before fetching signatures
+        self.rate_limiter.wait().await;
+        
+        let signatures = self.rpc_client.get_signatures_for_address(
             address,
             None,
             None,
-            1, // Only need the most recent
+            1,
         ).await?;
         
         if let Some(sig_info) = signatures.first() {

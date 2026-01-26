@@ -1,22 +1,30 @@
+// src/kora/monitor.rs - Enhanced with RateLimiter
+
 use solana_sdk::pubkey::Pubkey;
-use std::str::FromStr; // ✅ ADD THIS - needed for from_str() method
+use std::str::FromStr;
 use crate::{
     error::Result,
     solana::{client::SolanaRpcClient, accounts::AccountDiscovery},
     kora::types::SponsoredAccountInfo,
+    utils::RateLimiter, // ✅ USE: Import RateLimiter
 };
-use tracing::{info, debug, warn}; // ✅ ADD warn to imports
+use tracing::{info, debug, warn};
 
 pub struct KoraMonitor {
     rpc_client: SolanaRpcClient,
     operator_pubkey: Pubkey,
+    rate_limiter: RateLimiter, // ✅ USE: Add RateLimiter field
 }
 
 impl KoraMonitor {
     pub fn new(rpc_client: SolanaRpcClient, operator_pubkey: Pubkey) -> Self {
+        // Use the RPC client's rate limit delay for the monitor's rate limiter
+        let rate_limit_ms = rpc_client.rate_limit_delay.as_millis() as u64;
+        
         Self {
             rpc_client,
             operator_pubkey,
+            rate_limiter: RateLimiter::new(rate_limit_ms), // ✅ USE: new()
         }
     }
     
@@ -33,6 +41,9 @@ impl KoraMonitor {
         
         let mut sponsored_accounts = Vec::new();
         for account_info in discovered {
+            // ✅ USE: wait() - Rate limit when fetching last transaction times
+            self.rate_limiter.wait().await;
+            
             let last_activity = discovery.get_last_transaction_time(&account_info.pubkey).await?;
             
             sponsored_accounts.push(SponsoredAccountInfo {
@@ -57,15 +68,16 @@ impl KoraMonitor {
         use solana_sdk::signature::Signature;
         
         // Strategy: Fetch signatures in reverse (oldest first) until we find creation tx
-        // We'll paginate backwards to find the very first transaction
-        
         let mut oldest_signature: Option<Signature> = None;
         let mut before: Option<Signature> = None;
         const BATCH_SIZE: usize = 1000;
-        const MAX_ITERATIONS: usize = 10; // Prevent infinite loops (10k sigs max)
+        const MAX_ITERATIONS: usize = 10;
         
         // First, get initial batch to find oldest
         for iteration in 0..MAX_ITERATIONS {
+            // ✅ USE: wait() - Rate limit signature fetches
+            self.rate_limiter.wait().await;
+            
             let signatures = self.rpc_client.get_signatures_for_address(
                 pubkey,
                 before,
@@ -78,7 +90,7 @@ impl KoraMonitor {
                     debug!("Account {} has no transaction history (might be unused)", pubkey);
                     return Ok(false);
                 }
-                break; // Reached the end
+                break;
             }
             
             // Track the oldest signature we've seen
@@ -95,6 +107,9 @@ impl KoraMonitor {
         
         // Now check the oldest (creation) transaction
         if let Some(creation_sig) = oldest_signature {
+            // ✅ USE: wait() - Rate limit before fetching transaction
+            self.rate_limiter.wait().await;
+            
             match self.rpc_client.get_transaction(&creation_sig).await? {
                 Some(tx) => {
                     // Check if transaction succeeded
@@ -178,6 +193,9 @@ impl KoraMonitor {
         
         let mut sponsored_accounts = Vec::new();
         for account_info in discovered {
+            // ✅ USE: wait() - Rate limit when fetching last transaction times
+            self.rate_limiter.wait().await;
+            
             let last_activity = discovery.get_last_transaction_time(&account_info.pubkey).await?;
             
             sponsored_accounts.push(SponsoredAccountInfo {
@@ -202,8 +220,7 @@ impl KoraMonitor {
             return Ok(0);
         }
         
-        // Batch fetch all accounts at once (up to RPC limits)
-        const MAX_BATCH_SIZE: usize = 100; // Solana RPC limit
+        const MAX_BATCH_SIZE: usize = 100;
         let mut total = 0u64;
         
         let pubkeys: Vec<Pubkey> = accounts.iter().map(|a| a.pubkey).collect();
@@ -211,6 +228,9 @@ impl KoraMonitor {
         // Process in batches
         for chunk in pubkeys.chunks(MAX_BATCH_SIZE) {
             debug!("Fetching batch of {} accounts", chunk.len());
+            
+            // ✅ USE: wait() - Rate limit batch fetches
+            self.rate_limiter.wait().await;
             
             match self.rpc_client.get_multiple_accounts(chunk).await {
                 Ok(account_data) => {
@@ -225,6 +245,9 @@ impl KoraMonitor {
                     warn!("Batch fetch failed ({}), falling back to individual calls", e);
                     
                     for pubkey in chunk {
+                        // ✅ USE: wait() - Rate limit individual fallback calls
+                        self.rate_limiter.wait().await;
+                        
                         if let Ok(Some(account)) = self.rpc_client.get_account(pubkey).await {
                             total = total.saturating_add(account.lamports);
                         }

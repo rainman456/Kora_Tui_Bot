@@ -57,6 +57,30 @@ pub enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
+    List {
+        /// Filter by status (active, closed, reclaimed, all)
+        #[arg(short, long, default_value = "all")]
+        status: String,
+        
+        /// Output format (table, json)
+        #[arg(short, long, default_value = "table")]
+        format: String,
+        
+        /// Show detailed information including creation details
+        #[arg(short, long)]
+        detailed: bool,
+    },
+    
+    /// Reset scanning checkpoints (force full rescan on next run)
+    Reset {
+        /// Skip confirmation prompt
+        #[arg(short, long)]
+        yes: bool,
+    },
+    
+    /// Show checkpoint information and scanning state
+    Checkpoints,
+    
     
     /// Show statistics and reports
     Stats {
