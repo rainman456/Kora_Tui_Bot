@@ -1,7 +1,7 @@
 use rusqlite::{Connection, params};
 use crate::{
     error::Result,
-    storage::models::{SponsoredAccount, ReclaimOperation, AccountStatus},
+    storage::models::{SponsoredAccount, ReclaimOperation, AccountStatus, PassiveReclaimRecord},
 };
 use chrono::Utc;
 use std::str::FromStr;
@@ -22,13 +22,15 @@ impl Database {
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS sponsored_accounts (
                 pubkey TEXT PRIMARY KEY,
-                created_at TEXT NOT NULL,
-                closed_at TEXT,
-                rent_lamports INTEGER NOT NULL,
-                data_size INTEGER NOT NULL,
-                status TEXT NOT NULL,
-                creation_signature TEXT,
-                creation_slot INTEGER
+            created_at TEXT NOT NULL,
+            closed_at TEXT,
+            rent_lamports INTEGER NOT NULL,
+            data_size INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            creation_signature TEXT,
+            creation_slot INTEGER,
+            close_authority TEXT,
+            reclaim_strategy TEXT
             )",
             [],
         )?;
@@ -55,11 +57,28 @@ impl Database {
             )",
             [],
         )?;
+
+          self.conn.execute(
+        "CREATE TABLE IF NOT EXISTS passive_reclaims (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            amount INTEGER NOT NULL,
+            attributed_accounts TEXT NOT NULL,
+            confidence TEXT NOT NULL,
+            timestamp TEXT NOT NULL
+        )",
+        [],
+    )?;
         
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_status ON sponsored_accounts(status)",
             [],
         )?;
+
+        self.conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reclaim_strategy 
+         ON sponsored_accounts(reclaim_strategy)",
+        [],
+    )?;
         
         // ✅ NEW: Index on creation_signature for faster lookups
         self.conn.execute(
@@ -480,6 +499,182 @@ impl Database {
         self.conn.execute("DELETE FROM checkpoints", [])?;
         Ok(())
     }
+
+    // Add to impl Database block in src/storage/db.rs
+
+/// Save treasury balance checkpoint
+pub fn save_treasury_balance(&self, balance: u64) -> Result<()> {
+    self.conn.execute(
+        "INSERT OR REPLACE INTO checkpoints (key, value, updated_at) 
+         VALUES ('treasury_balance', ?1, ?2)",
+        params![balance.to_string(), Utc::now().to_rfc3339()],
+    )?;
+    Ok(())
+}
+
+/// Get last known treasury balance
+pub fn get_last_treasury_balance(&self) -> Result<u64> {
+    let result: std::result::Result<String, rusqlite::Error> = self.conn.query_row(
+        "SELECT value FROM checkpoints WHERE key = 'treasury_balance'",
+        [],
+        |row| row.get(0),
+    );
+    
+    match result {
+        Ok(balance_str) => Ok(balance_str.parse::<u64>().unwrap_or(0)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(0),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Get accounts that were recently marked as closed
+pub fn get_recently_closed_accounts(&self, hours: i64) -> Result<Vec<SponsoredAccount>> {
+    let cutoff = Utc::now() - chrono::Duration::hours(hours);
+    
+    let mut stmt = self.conn.prepare(
+        "SELECT pubkey, created_at, closed_at, rent_lamports, data_size, status, 
+                creation_signature, creation_slot
+         FROM sponsored_accounts 
+         WHERE status = 'Closed' AND closed_at > ?1
+         ORDER BY closed_at DESC"
+    )?;
+    
+    let accounts = stmt.query_map([cutoff.to_rfc3339()], |row| {
+        Ok(SponsoredAccount {
+            pubkey: row.get(0)?,
+            created_at: row.get::<_, String>(1)?.parse().unwrap(),
+            closed_at: row.get::<_, Option<String>>(2)?
+                .map(|s| s.parse().unwrap()),
+            rent_lamports: row.get(3)?,
+            data_size: row.get(4)?,
+            status: AccountStatus::Closed,
+            creation_signature: row.get(6).ok(),
+            creation_slot: row.get::<_, Option<i64>>(7).ok()
+                .flatten()
+                .map(|s| s as u64),
+        })
+    })?
+    .collect::<std::result::Result<Vec<_>, _>>()?;
+    
+    Ok(accounts)
+}
+
+/// Save a passive reclaim event
+pub fn save_passive_reclaim(
+    &self,
+    amount: u64,
+    attributed_accounts: &[String],
+    confidence: &str,
+) -> Result<()> {
+    self.conn.execute(
+        "INSERT INTO passive_reclaims 
+         (amount, attributed_accounts, confidence, timestamp) 
+         VALUES (?1, ?2, ?3, ?4)",
+        params![
+            amount,
+            serde_json::to_string(attributed_accounts)?,
+            confidence,
+            Utc::now().to_rfc3339(),
+        ],
+    )?;
+    Ok(())
+}
+
+/// Get total amount passively reclaimed
+pub fn get_total_passive_reclaimed(&self) -> Result<u64> {
+    let total: Option<u64> = self.conn.query_row(
+        "SELECT SUM(amount) FROM passive_reclaims",
+        [],
+        |row| row.get(0),
+    )?;
+    
+    Ok(total.unwrap_or(0))
+}
+
+/// Get passive reclaim history
+pub fn get_passive_reclaim_history(&self, limit: Option<usize>) -> Result<Vec<PassiveReclaimRecord>> {
+    let query = if let Some(lim) = limit {
+        format!(
+            "SELECT id, amount, attributed_accounts, confidence, timestamp 
+             FROM passive_reclaims 
+             ORDER BY timestamp DESC 
+             LIMIT {}",
+            lim
+        )
+    } else {
+        "SELECT id, amount, attributed_accounts, confidence, timestamp 
+         FROM passive_reclaims 
+         ORDER BY timestamp DESC".to_string()
+    };
+    
+    let mut stmt = self.conn.prepare(&query)?;
+    
+    let records = stmt.query_map([], |row| {
+        Ok(PassiveReclaimRecord {
+            id: row.get(0)?,
+            amount: row.get(1)?,
+            attributed_accounts: serde_json::from_str(&row.get::<_, String>(2)?).unwrap_or_default(),
+            confidence: row.get(3)?,
+            timestamp: row.get::<_, String>(4)?.parse().unwrap(),
+        })
+    })?
+    .collect::<std::result::Result<Vec<_>, _>>()?;
+    
+    Ok(records)
+}
+
+/// Update account authority information
+pub fn update_account_authority(
+    &self,
+    pubkey: &str,
+    close_authority: Option<String>,
+    reclaim_strategy: &str,
+) -> Result<()> {
+    self.conn.execute(
+        "UPDATE sponsored_accounts 
+         SET close_authority = ?1, reclaim_strategy = ?2
+         WHERE pubkey = ?3",
+        params![close_authority, reclaim_strategy, pubkey],
+    )?;
+    Ok(())
+}
+
+/// Get accounts by reclaim strategy
+pub fn get_accounts_by_strategy(&self, strategy: &str) -> Result<Vec<SponsoredAccount>> {
+    let mut stmt = self.conn.prepare(
+        "SELECT pubkey, created_at, closed_at, rent_lamports, data_size, status, 
+                creation_signature, creation_slot
+         FROM sponsored_accounts 
+         WHERE reclaim_strategy = ?1"
+    )?;
+    
+    let accounts = stmt.query_map([strategy], |row| {
+        let status_str: String = row.get(5)?;
+        let status = match status_str.as_str() {
+            "Active" => AccountStatus::Active,
+            "Closed" => AccountStatus::Closed,
+            "Reclaimed" => AccountStatus::Reclaimed,
+            _ => AccountStatus::Active,
+        };
+        
+        Ok(SponsoredAccount {
+            pubkey: row.get(0)?,
+            created_at: row.get::<_, String>(1)?.parse().unwrap(),
+            closed_at: row.get::<_, Option<String>>(2)?
+                .map(|s| s.parse().unwrap()),
+            rent_lamports: row.get(3)?,
+            data_size: row.get(4)?,
+            status,
+            creation_signature: row.get(6).ok(),
+            creation_slot: row.get::<_, Option<i64>>(7).ok()
+                .flatten()
+                .map(|s| s as u64),
+        })
+    })?
+    .collect::<std::result::Result<Vec<_>, _>>()?;
+    
+    Ok(accounts)
+}
     
     /// Batch save accounts (more efficient than individual saves)
     pub fn save_accounts_batch(&self, accounts: &[SponsoredAccount]) -> Result<usize> {

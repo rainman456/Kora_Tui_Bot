@@ -8,6 +8,7 @@ mod error;
 mod utils;
 mod telegram;
 mod tui;
+mod treasury;
 
 
 use clap::Parser;
@@ -46,6 +47,11 @@ async fn main() {
         info!("Generating statistics...");
         show_stats(&config, &format).await
     }
+
+    Commands::PassiveCheck => {
+    info!("Checking for passive reclaims...");
+    check_passive_reclaims(&config).await
+}
 
     Commands::DailySummary => {
     info!("Sending daily summary...");
@@ -252,6 +258,45 @@ async fn scan_accounts(config: &Config, verbose: bool, dry_run: bool, limit: Opt
         }
     }
     
+
+    // In scan_accounts(), after discovering accounts, add classification:
+
+println!("\n{}", "Analyzing reclaim strategies...".cyan());
+
+let eligibility_checker = reclaim::EligibilityChecker::new(rpc_client.clone(), config.clone());
+
+let mut active_count = 0;
+let mut passive_count = 0;
+let mut unrecoverable_count = 0;
+
+for account_info in &sponsored_accounts {
+    // Determine strategy
+    if let Ok((strategy, close_authority)) = eligibility_checker
+        .determine_reclaim_strategy(&account_info.pubkey).await 
+    {
+        // Update database with strategy
+        let _ = db.update_account_authority(
+            &account_info.pubkey.to_string(),
+            close_authority,
+            &strategy.to_string(),
+        );
+        
+        match strategy {
+            storage::models::ReclaimStrategy::ActiveReclaim => active_count += 1,
+            storage::models::ReclaimStrategy::PassiveMonitoring => passive_count += 1,
+            storage::models::ReclaimStrategy::Unrecoverable => unrecoverable_count += 1,
+            storage::models::ReclaimStrategy::Unknown => {},
+        }
+    }
+}
+
+println!("\n{}", "=== Reclaim Strategy Analysis ===".cyan().bold());
+println!("Active Reclaim Possible:  {} accounts ✓", active_count.to_string().green());
+println!("Passive Monitoring:       {} accounts ⏱", passive_count.to_string().yellow());
+println!("Unrecoverable:            {} accounts ✗", unrecoverable_count.to_string().red());
+
+
+
     // Display results
     println!("\n{}", "=== Scan Results ===".cyan().bold());
     println!("Total Sponsored:      {}", sponsored_accounts.len());
@@ -519,6 +564,86 @@ async fn reclaim_account(config: &Config, pubkey: &str, yes: bool, dry_run: bool
 //         tokio::time::sleep(tokio::time::Duration::from_secs(interval)).await;
 //     }
 // }
+
+
+
+
+
+
+
+
+
+
+
+
+// Add this function to main.rs
+
+async fn check_passive_reclaims(config: &Config) -> error::Result<()> {
+    println!("{}", "Checking treasury for passive reclaims...".cyan());
+    
+    let rpc_client = solana::SolanaRpcClient::new(
+        &config.solana.rpc_url,
+        config.commitment_config(),
+        config.solana.rate_limit_delay_ms,
+    );
+    
+    let treasury_wallet = config.treasury_wallet()?;
+    let db = storage::Database::new(&config.database.path)?;
+    
+    let monitor = treasury::TreasuryMonitor::new(
+        treasury_wallet,
+        rpc_client.clone(),
+        db.clone(),
+    );
+    
+    let passive_reclaims = monitor.check_for_passive_reclaims().await?;
+    
+    if passive_reclaims.is_empty() {
+        println!("{}", "No passive reclaims detected".yellow());
+        return Ok(());
+    }
+    
+    println!("\n{} passive reclaim(s) detected:", passive_reclaims.len());
+    
+    for reclaim in &passive_reclaims {
+        println!("\n{}", "═".repeat(80));
+        println!("Amount: {}", utils::format_sol(reclaim.amount).green());
+        println!("Confidence: {:?}", reclaim.confidence);
+        println!("Timestamp: {}", utils::format_timestamp(&reclaim.timestamp));
+        
+        if !reclaim.attributed_accounts.is_empty() {
+            println!("Likely from accounts:");
+            for acc in &reclaim.attributed_accounts {
+                println!("  • {}", acc);
+            }
+        }
+        
+        // Save to database
+        let account_strs: Vec<String> = reclaim.attributed_accounts
+            .iter()
+            .map(|pk| pk.to_string())
+            .collect();
+        
+        let confidence_str = format!("{:?}", reclaim.confidence);
+        db.save_passive_reclaim(
+            reclaim.amount,
+            &account_strs,
+            &confidence_str,
+        )?;
+    }
+    
+    println!("\n{}", "═".repeat(80));
+    
+    let total_passive = monitor.get_total_passive_reclaimed()?;
+    println!("\nTotal passive reclaims recorded: {}", utils::format_sol(total_passive).green());
+    
+    Ok(())
+}
+
+
+
+
+
 
 
 async fn run_auto_service(config: &Config, interval: u64, dry_run: bool) -> error::Result<()> {

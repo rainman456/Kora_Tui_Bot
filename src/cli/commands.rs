@@ -49,6 +49,8 @@ pub enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
+
+    PassiveCheck,
     
     /// Run automated reclaim service
     Auto {

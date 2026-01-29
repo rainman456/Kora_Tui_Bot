@@ -95,6 +95,18 @@ impl EligibilityChecker {
         Ok(false)
     }
     
+
+
+
+
+
+
+
+
+
+
+
+
     fn determine_account_type(&self, account: &solana_sdk::account::Account) -> AccountType {
         if account.owner == spl_token::id() && account.data.len() == 165 {
             AccountType::SplToken
@@ -112,6 +124,90 @@ impl EligibilityChecker {
             AccountType::Other(_) => false,
         }
     }
+
+
+    // Add to impl EligibilityChecker in src/reclaim/eligibility.rs
+
+/// Determine reclaim strategy for an account
+pub async fn determine_reclaim_strategy(
+    &self,
+    pubkey: &Pubkey,
+) -> Result<(crate::storage::models::ReclaimStrategy, Option<String>)> {
+    let account = self.rpc_client.get_account(pubkey).await?;
+    if account.is_none() {
+        return Ok((crate::storage::models::ReclaimStrategy::Unknown, None));
+    }
+    
+    let account = account.unwrap();
+    let account_type = self.determine_account_type(&account);
+    
+    match account_type {
+        AccountType::System => {
+            // System accounts: user controls the keys
+            Ok((
+                crate::storage::models::ReclaimStrategy::Unrecoverable,
+                None
+            ))
+        }
+        
+        AccountType::SplToken => {
+            // Check if operator has close authority
+            if self.has_close_authority(&account).await? {
+                let operator = self.config.operator_pubkey()?;
+                Ok((
+                    crate::storage::models::ReclaimStrategy::ActiveReclaim,
+                    Some(operator.to_string())
+                ))
+            } else {
+                // Try to get the actual close authority
+                let close_authority = self.get_token_close_authority(&account)?;
+                Ok((
+                    crate::storage::models::ReclaimStrategy::PassiveMonitoring,
+                    close_authority
+                ))
+            }
+        }
+        
+        AccountType::Other(_) => {
+            // Custom programs: depends on program logic
+            Ok((
+                crate::storage::models::ReclaimStrategy::Unknown,
+                None
+            ))
+        }
+    }
+}
+
+/// Get the close authority from a token account
+fn get_token_close_authority(&self, account: &solana_sdk::account::Account) -> Result<Option<String>> {
+    if account.data.len() < 165 {
+        return Ok(None);
+    }
+    
+    let has_close_authority = account.data[129] == 1;
+    
+    if has_close_authority {
+        let close_authority_bytes: [u8; 32] = account.data[130..162]
+            .try_into()
+            .map_err(|_| crate::error::ReclaimError::NotEligible(
+                "Failed to parse close authority".to_string()
+            ))?;
+        let close_authority = Pubkey::new_from_array(close_authority_bytes);
+        Ok(Some(close_authority.to_string()))
+    } else {
+        // No close authority set - owner is the authority
+        let owner_bytes: [u8; 32] = account.data[32..64]
+            .try_into()
+            .map_err(|_| crate::error::ReclaimError::NotEligible(
+                "Failed to parse owner".to_string()
+            ))?;
+        let owner = Pubkey::new_from_array(owner_bytes);
+        Ok(Some(owner.to_string()))
+    }
+}
+
+
+
     
     /// ✅ FIX: Removed unused pubkey parameter
     async fn has_close_authority(

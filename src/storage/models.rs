@@ -31,6 +31,38 @@ pub struct ReclaimOperation {
     pub reason: String,
 }
 
+
+// Add to src/storage/models.rs
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PassiveReclaimRecord {
+    pub id: i64,
+    pub amount: u64,
+    pub attributed_accounts: Vec<String>,
+    pub confidence: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum ReclaimStrategy {
+    ActiveReclaim,      // Operator has close authority
+    PassiveMonitoring,  // User controls, monitor for passive return
+    Unrecoverable,      // Permanently locked (system accounts)
+    Unknown,            // Not yet determined
+}
+
+impl std::fmt::Display for ReclaimStrategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ReclaimStrategy::ActiveReclaim => write!(f, "ActiveReclaim"),
+            ReclaimStrategy::PassiveMonitoring => write!(f, "PassiveMonitoring"),
+            ReclaimStrategy::Unrecoverable => write!(f, "Unrecoverable"),
+            ReclaimStrategy::Unknown => write!(f, "Unknown"),
+        }
+    }
+}
+
+
 impl SponsoredAccount {
     #[allow(dead_code)]
     pub fn new(pubkey: Pubkey, rent_lamports: u64, data_size: usize) -> Self {
