@@ -36,10 +36,11 @@ impl EligibilityChecker {
     }
         
         let account = self.rpc_client.get_account(pubkey).await?;
-        if account.is_none() {
-            debug!("Account {} doesn't exist, nothing to reclaim", pubkey);
-            return Ok(false);
-        }
+if account.is_none() {
+    return Err(crate::error::ReclaimError::AccountNotFound(
+        format!("Account {} does not exist", pubkey)
+    ));
+}
         
         let account = account.unwrap();
         
