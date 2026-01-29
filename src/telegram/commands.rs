@@ -1,15 +1,17 @@
-// src/telegram/commands.rs - Fixed with proper imports
+// src/telegram/commands.rs - Fixed with database persistence
 
 use teloxide::prelude::*;
-use teloxide::utils::command::BotCommands; // ✅ ADD: Import trait for descriptions()
+use teloxide::utils::command::BotCommands;
 use std::sync::Arc;
 use crate::telegram::bot::{BotState, Command};
 use crate::kora::KoraMonitor;
 use crate::reclaim::EligibilityChecker;
 use crate::utils;
 use crate::telegram::formatters::format_sol_tg;
+use crate::storage::models::{SponsoredAccount, AccountStatus}; 
+use tracing::{info, error}; 
 
-/// Main command handler (renamed to avoid conflict)
+/// Main command handler
 pub async fn handle_command(
     bot: Bot, 
     msg: Message, 
@@ -74,6 +76,7 @@ async fn handle_status(bot: Bot, msg: Message, state: Arc<BotState>) -> Response
     Ok(())
 }
 
+// ✅ CRITICAL FIX: Persist scan results to database
 async fn handle_scan(bot: Bot, msg: Message, state: Arc<BotState>) -> ResponseResult<()> {
     bot.send_message(msg.chat.id, "🔍 Scanning for sponsored accounts... This may take a moment.").await?;
     
@@ -89,12 +92,69 @@ async fn handle_scan(bot: Bot, msg: Message, state: Arc<BotState>) -> ResponseRe
     
     match monitor.get_sponsored_accounts(100).await {
         Ok(accounts) => {
-            bot.send_message(
-                msg.chat.id,
-                format!("✅ Found {} sponsored accounts in recent history.", accounts.len())
-            ).await?;
+            let count = accounts.len();
+            
+            // ✅ FIX: Convert to database models and persist
+            let db_accounts: Vec<SponsoredAccount> = accounts
+                .iter()
+                .map(|account_info| SponsoredAccount {
+                    pubkey: account_info.pubkey.to_string(),
+                    created_at: account_info.created_at,
+                    closed_at: None,
+                    rent_lamports: account_info.rent_lamports,
+                    data_size: account_info.data_size,
+                    status: AccountStatus::Active,
+                    creation_signature: Some(account_info.creation_signature.to_string()),
+                    creation_slot: Some(account_info.creation_slot),
+                    close_authority: None,
+                    reclaim_strategy: None,
+                })
+                .collect();
+            
+            // ✅ FIX: Save to database
+            let db = state.database.lock().await;
+            match db.save_accounts_batch(&db_accounts) {
+                Ok(saved_count) => {
+                    info!("Telegram /scan saved {} accounts to database", saved_count);
+                    
+                    // ✅ FIX: Update checkpoint
+                    if let Some(latest_account) = accounts.first() {
+                        let _ = db.save_last_processed_signature(
+                            &latest_account.creation_signature.to_string()
+                        );
+                        let _ = db.save_last_processed_slot(latest_account.creation_slot);
+                    }
+                    
+                    bot.send_message(
+                        msg.chat.id,
+                        format!(
+                            "✅ Scan complete\\!\n\n\
+                             Found: {} accounts\n\
+                             Saved: {} to database\n\n\
+                             Use /accounts to view them\\.",
+                            count, saved_count
+                        )
+                    )
+                    .parse_mode(teloxide::types::ParseMode::MarkdownV2)
+                    .await?;
+                }
+                Err(e) => {
+                    error!("Failed to save accounts from Telegram scan: {}", e);
+                    bot.send_message(
+                        msg.chat.id,
+                        format!(
+                            "⚠️ Found {} accounts but failed to save to database: {}\n\n\
+                             Accounts were not persisted\\.",
+                            count, e
+                        )
+                    )
+                    .parse_mode(teloxide::types::ParseMode::MarkdownV2)
+                    .await?;
+                }
+            }
         }
         Err(e) => {
+            error!("Telegram /scan failed: {}", e);
             bot.send_message(msg.chat.id, format!("❌ Scan failed: {}", e)).await?;
         }
     }
@@ -200,6 +260,7 @@ async fn handle_reclaimed(bot: Bot, msg: Message, state: Arc<BotState>) -> Respo
     Ok(())
 }
 
+// ✅ FIX: Also persist eligible accounts check results
 async fn handle_eligible(bot: Bot, msg: Message, state: Arc<BotState>) -> ResponseResult<()> {
     bot.send_message(msg.chat.id, "🔍 Checking eligibility...").await?;
     
@@ -218,12 +279,36 @@ async fn handle_eligible(bot: Bot, msg: Message, state: Arc<BotState>) -> Respon
             let eligibility_checker = EligibilityChecker::new(state.rpc_client.clone(), state.config.clone());
             let mut eligible_count = 0;
             let mut total_reclaimable = 0u64;
+            let mut eligible_accounts = Vec::new();
             
-            for acc in accounts {
+            for acc in &accounts {
                 if let Ok(true) = eligibility_checker.is_eligible(&acc.pubkey, acc.created_at).await {
                     eligible_count += 1;
                     total_reclaimable += acc.rent_lamports;
+                    eligible_accounts.push(acc.clone());
                 }
+            }
+            
+            // ✅ FIX: Save all scanned accounts to database (not just eligible ones)
+            let db_accounts: Vec<SponsoredAccount> = accounts
+                .iter()
+                .map(|account_info| SponsoredAccount {
+                    pubkey: account_info.pubkey.to_string(),
+                    created_at: account_info.created_at,
+                    closed_at: None,
+                    rent_lamports: account_info.rent_lamports,
+                    data_size: account_info.data_size,
+                    status: AccountStatus::Active,
+                    creation_signature: Some(account_info.creation_signature.to_string()),
+                    creation_slot: Some(account_info.creation_slot),
+                    close_authority: None,
+                    reclaim_strategy: None,
+                })
+                .collect();
+            
+            let db = state.database.lock().await;
+            if let Err(e) = db.save_accounts_batch(&db_accounts) {
+                error!("Failed to save accounts from /eligible check: {}", e);
             }
             
             bot.send_message(
@@ -238,6 +323,7 @@ async fn handle_eligible(bot: Bot, msg: Message, state: Arc<BotState>) -> Respon
             .await?;
         }
         Err(e) => {
+            error!("Telegram /eligible check failed: {}", e);
             bot.send_message(msg.chat.id, format!("❌ Error checking eligibility: {}", e)).await?;
         }
     }
