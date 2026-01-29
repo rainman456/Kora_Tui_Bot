@@ -1,6 +1,7 @@
-use teloxide::Bot;
-use teloxide::requests::Requester;
-use teloxide::types::ChatId;
+// src/telegram/auto_notify.rs - COMPLETE FIXED VERSION
+
+use teloxide::prelude::*;
+use teloxide::types::{ChatId, ParseMode};
 use tracing::{info, error};
 use crate::config::Config;
 
@@ -41,43 +42,71 @@ impl AutoNotifier {
         }
     }
 
+    /// Send message to all authorized users
+    async fn send_message(&self, message: &str) {
+        if !self.enabled {
+            return;
+        }
 
-    // Add to impl AutoNotifier in src/telegram.rs
-
-pub async fn notify_passive_reclaim(
-    &self,
-    amount: u64,
-    accounts: &[String],
-    confidence: &str,
-) {
-    if !self.enabled {
-        return;
+        for chat_id in &self.chat_ids {
+            match self.bot
+                .send_message(ChatId(*chat_id), message)
+                .parse_mode(ParseMode::MarkdownV2)
+                .await
+            {
+                Ok(_) => {
+                    info!("Notification sent to chat {}", chat_id);
+                }
+                Err(e) => {
+                    error!("Failed to send Telegram message to {}: {}", chat_id, e);
+                }
+            }
+        }
     }
-    
-    let sol_amount = crate::solana::rent::RentCalculator::lamports_to_sol(amount);
-    
-    let accounts_str = if accounts.len() <= 3 {
-        accounts.iter()
-            .map(|a| format!("• `{}`", a))
-            .collect::<Vec<_>>()
-            .join("\n")
-    } else {
-        format!("{} accounts", accounts.len())
-    };
-    
-    let message = format!(
-        "🔄 *Passive Reclaim Detected*\n\n\
-         Amount: *{:.9} SOL*\n\
-         Confidence: {}\n\
-         Likely from:\n{}\n\n\
-         This rent returned to treasury when the user closed their account.",
-        sol_amount,
-        confidence,
-        accounts_str
-    );
-    
-    self.send_message(&message).await;
-}
+
+    /// Send passive reclaim notification
+    pub async fn notify_passive_reclaim(
+        &self,
+        amount: u64,
+        accounts: &[String],
+        confidence: &str,
+    ) {
+        if !self.enabled {
+            return;
+        }
+        
+        let sol_amount = crate::solana::rent::RentCalculator::lamports_to_sol(amount);
+        
+        let accounts_str = if accounts.len() <= 3 {
+            accounts.iter()
+                .map(|a| {
+                    // Format pubkey for display
+                    let short = if a.len() > 12 {
+                        format!("{}...{}", &a[..6], &a[a.len()-6..])
+                    } else {
+                        a.clone()
+                    };
+                    format!("• `{}`", short)
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            format!("{} accounts", accounts.len())
+        };
+        
+        let message = format!(
+            "🔄 *Passive Reclaim Detected*\n\n\
+             Amount: *{:.9} SOL*\n\
+             Confidence: {}\n\
+             Likely from:\n{}\n\n\
+             This rent returned to treasury when the user closed their account.",
+            sol_amount,
+            confidence,
+            accounts_str
+        );
+        
+        self.send_message(&message).await;
+    }
 
     /// Send scan complete notification
     pub async fn notify_scan_complete(&self, total: usize, eligible: usize) {
@@ -93,7 +122,7 @@ pub async fn notify_passive_reclaim(
             total, eligible
         );
 
-        self.send_to_all(&message).await;
+        self.send_message(&message).await;
     }
 
     /// Send reclaim success notification
@@ -102,7 +131,7 @@ pub async fn notify_passive_reclaim(
             return;
         }
 
-        let sol_amount = amount as f64 / 1_000_000_000.0;
+        let sol_amount = crate::solana::rent::RentCalculator::lamports_to_sol(amount);
         let message = format!(
             "✅ *Reclaim Successful*\n\n\
             Account: `{}`\n\
@@ -112,7 +141,7 @@ pub async fn notify_passive_reclaim(
             sol_amount
         );
 
-        self.send_to_all(&message).await;
+        self.send_message(&message).await;
     }
 
     /// Send reclaim failure notification
@@ -130,7 +159,7 @@ pub async fn notify_passive_reclaim(
             error
         );
 
-        self.send_to_all(&message).await;
+        self.send_message(&message).await;
     }
 
     /// Send batch complete notification
@@ -149,7 +178,7 @@ pub async fn notify_passive_reclaim(
             emoji, successful, failed, total_sol
         );
 
-        self.send_to_all(&message).await;
+        self.send_message(&message).await;
     }
 
     /// Send error notification
@@ -165,7 +194,7 @@ pub async fn notify_passive_reclaim(
             error_msg
         );
 
-        self.send_to_all(&message).await;
+        self.send_message(&message).await;
     }
 
     /// Send high-value alert (only if threshold exceeded)
@@ -174,7 +203,7 @@ pub async fn notify_passive_reclaim(
             return;
         }
 
-        let sol_amount = amount as f64 / 1_000_000_000.0;
+        let sol_amount = crate::solana::rent::RentCalculator::lamports_to_sol(amount);
         
         if sol_amount < threshold_sol {
             return; // Don't notify if below threshold
@@ -190,7 +219,7 @@ pub async fn notify_passive_reclaim(
             threshold_sol
         );
 
-        self.send_to_all(&message).await;
+        self.send_message(&message).await;
     }
 
     /// Send daily summary
@@ -199,7 +228,7 @@ pub async fn notify_passive_reclaim(
             return;
         }
 
-        let sol_amount = total_reclaimed as f64 / 1_000_000_000.0;
+        let sol_amount = crate::solana::rent::RentCalculator::lamports_to_sol(total_reclaimed);
         let message = format!(
             "📈 *Daily Summary*\n\n\
             Operations: {}\n\
@@ -209,21 +238,7 @@ pub async fn notify_passive_reclaim(
             sol_amount
         );
 
-        self.send_to_all(&message).await;
-    }
-
-    /// Send to all authorized users
-    async fn send_to_all(&self, message: &str) {
-        for chat_id in &self.chat_ids {
-            let mut req = self.bot.send_message(ChatId(*chat_id), message);
-            req.parse_mode = Some(teloxide::types::ParseMode::MarkdownV2);
-            
-            if let Err(e) = req.await {
-                error!("Failed to send notification to chat {}: {}", chat_id, e);
-            } else {
-                info!("Notification sent to chat {}", chat_id);
-            }
-        }
+        self.send_message(&message).await;
     }
 
     /// Format pubkey for display
