@@ -2,7 +2,7 @@ use rusqlite::{Connection, params};
 use std::sync::{Arc, Mutex};
 use crate::{
     error::Result,
-    storage::models::{SponsoredAccount, ReclaimOperation, AccountStatus, PassiveReclaimRecord},
+    storage::models::{SponsoredAccount, ReclaimOperation, AccountStatus, PassiveReclaimRecord, ReclaimStrategy},
 };
 use chrono::Utc;
 use std::str::FromStr;
@@ -26,15 +26,15 @@ impl Database {
         conn.execute(
             "CREATE TABLE IF NOT EXISTS sponsored_accounts (
                 pubkey TEXT PRIMARY KEY,
-            created_at TEXT NOT NULL,
-            closed_at TEXT,
-            rent_lamports INTEGER NOT NULL,
-            data_size INTEGER NOT NULL,
-            status TEXT NOT NULL,
-            creation_signature TEXT,
-            creation_slot INTEGER,
-            close_authority TEXT,
-            reclaim_strategy TEXT
+                created_at TEXT NOT NULL,
+                closed_at TEXT,
+                rent_lamports INTEGER NOT NULL,
+                data_size INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                creation_signature TEXT,
+                creation_slot INTEGER,
+                close_authority TEXT,
+                reclaim_strategy TEXT
             )",
             [],
         )?;
@@ -62,16 +62,16 @@ impl Database {
             [],
         )?;
 
-          conn.execute(
-        "CREATE TABLE IF NOT EXISTS passive_reclaims (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            amount INTEGER NOT NULL,
-            attributed_accounts TEXT NOT NULL,
-            confidence TEXT NOT NULL,
-            timestamp TEXT NOT NULL
-        )",
-        [],
-    )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS passive_reclaims (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                amount INTEGER NOT NULL,
+                attributed_accounts TEXT NOT NULL,
+                confidence TEXT NOT NULL,
+                timestamp TEXT NOT NULL
+            )",
+            [],
+        )?;
         
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_status ON sponsored_accounts(status)",
@@ -79,10 +79,10 @@ impl Database {
         )?;
 
         conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_reclaim_strategy 
-         ON sponsored_accounts(reclaim_strategy)",
-        [],
-    )?;
+            "CREATE INDEX IF NOT EXISTS idx_reclaim_strategy 
+             ON sponsored_accounts(reclaim_strategy)",
+            [],
+        )?;
         
         // Index on creation_signature for faster lookups
         conn.execute(
@@ -95,6 +95,7 @@ impl Database {
     
     pub fn save_account(&self, account: &SponsoredAccount) -> Result<()> {
         let conn = self.conn.lock().unwrap();
+        conn.execute(
             "INSERT INTO sponsored_accounts 
              (pubkey, created_at, closed_at, rent_lamports, data_size, status, creation_signature, creation_slot, close_authority, reclaim_strategy) 
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)

@@ -8,7 +8,7 @@ use crate::{
     config::Config,
     kora::types::AccountType,
 };
-use tracing::{debug, warn};
+use tracing::{debug};
 
 pub struct EligibilityChecker {
     rpc_client: SolanaRpcClient,
