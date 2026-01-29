@@ -74,6 +74,8 @@ impl KoraMonitor {
         const MAX_ITERATIONS: usize = 10;
         
         // First, get initial batch to find oldest
+        let mut history_exhausted = false;
+        
         for iteration in 0..MAX_ITERATIONS {
             // ✅ USE: wait() - Rate limit signature fetches
             self.rate_limiter.wait().await;
@@ -90,6 +92,7 @@ impl KoraMonitor {
                     debug!("Account {} has no transaction history (might be unused)", pubkey);
                     return Ok(false);
                 }
+                history_exhausted = true;
                 break;
             }
             
@@ -101,8 +104,15 @@ impl KoraMonitor {
             
             // If we got fewer than requested, we've reached the end
             if signatures.len() < BATCH_SIZE {
+                history_exhausted = true;
                 break;
             }
+        }
+        
+        if !history_exhausted {
+            warn!("Account {} has too much history (>{} txs), cannot verify sponsorship reliably", 
+                pubkey, MAX_ITERATIONS * BATCH_SIZE);
+            return Ok(false);
         }
         
         // Now check the oldest (creation) transaction

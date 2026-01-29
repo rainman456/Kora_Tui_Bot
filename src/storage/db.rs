@@ -95,10 +95,19 @@ impl Database {
     
     pub fn save_account(&self, account: &SponsoredAccount) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT OR REPLACE INTO sponsored_accounts 
-             (pubkey, created_at, closed_at, rent_lamports, data_size, status, creation_signature, creation_slot) 
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO sponsored_accounts 
+             (pubkey, created_at, closed_at, rent_lamports, data_size, status, creation_signature, creation_slot, close_authority, reclaim_strategy) 
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT(pubkey) DO UPDATE SET
+                created_at = excluded.created_at,
+                closed_at = excluded.closed_at,
+                rent_lamports = excluded.rent_lamports,
+                data_size = excluded.data_size,
+                status = excluded.status,
+                creation_signature = excluded.creation_signature,
+                creation_slot = excluded.creation_slot,
+                close_authority = excluded.close_authority,
+                reclaim_strategy = excluded.reclaim_strategy",
             params![
                 account.pubkey,
                 account.created_at.to_rfc3339(),
@@ -108,6 +117,8 @@ impl Database {
                 format!("{:?}", account.status),
                 account.creation_signature,
                 account.creation_slot.map(|s| s as i64),
+                account.close_authority,
+                account.reclaim_strategy.as_ref().map(|s| s.to_string()),
             ],
         )?;
         Ok(())
@@ -116,7 +127,7 @@ impl Database {
     pub fn get_active_accounts(&self) -> Result<Vec<SponsoredAccount>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT pubkey, created_at, closed_at, rent_lamports, data_size, status, creation_signature, creation_slot
+            "SELECT pubkey, created_at, closed_at, rent_lamports, data_size, status, creation_signature, creation_slot, close_authority, reclaim_strategy
              FROM sponsored_accounts 
              WHERE status = 'Active'"
         )?;
@@ -134,6 +145,10 @@ impl Database {
                 creation_slot: row.get::<_, Option<i64>>(7).ok()
                     .flatten()
                     .map(|s| s as u64),
+                close_authority: row.get(8).ok(),
+                reclaim_strategy: row.get::<_, Option<String>>(9).ok()
+                    .flatten()
+                    .and_then(|s| ReclaimStrategy::from_str(&s).ok()),
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -144,7 +159,7 @@ impl Database {
     pub fn get_closed_accounts(&self) -> Result<Vec<SponsoredAccount>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT pubkey, created_at, closed_at, rent_lamports, data_size, status, creation_signature, creation_slot
+            "SELECT pubkey, created_at, closed_at, rent_lamports, data_size, status, creation_signature, creation_slot, close_authority, reclaim_strategy
              FROM sponsored_accounts 
              WHERE status = 'Closed'"
         )?;
@@ -162,6 +177,10 @@ impl Database {
                 creation_slot: row.get::<_, Option<i64>>(7).ok()
                     .flatten()
                     .map(|s| s as u64),
+                close_authority: row.get(8).ok(),
+                reclaim_strategy: row.get::<_, Option<String>>(9).ok()
+                    .flatten()
+                    .and_then(|s| ReclaimStrategy::from_str(&s).ok()),
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -172,7 +191,7 @@ impl Database {
     pub fn get_reclaimed_accounts(&self) -> Result<Vec<SponsoredAccount>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT pubkey, created_at, closed_at, rent_lamports, data_size, status, creation_signature, creation_slot
+            "SELECT pubkey, created_at, closed_at, rent_lamports, data_size, status, creation_signature, creation_slot, close_authority, reclaim_strategy
              FROM sponsored_accounts 
              WHERE status = 'Reclaimed'"
         )?;
@@ -190,6 +209,10 @@ impl Database {
                 creation_slot: row.get::<_, Option<i64>>(7).ok()
                     .flatten()
                     .map(|s| s as u64),
+                close_authority: row.get(8).ok(),
+                reclaim_strategy: row.get::<_, Option<String>>(9).ok()
+                    .flatten()
+                    .and_then(|s| ReclaimStrategy::from_str(&s).ok()),
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -200,7 +223,7 @@ impl Database {
     pub fn get_account_by_pubkey(&self, pubkey: &str) -> Result<Option<SponsoredAccount>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT pubkey, created_at, closed_at, rent_lamports, data_size, status, creation_signature, creation_slot
+            "SELECT pubkey, created_at, closed_at, rent_lamports, data_size, status, creation_signature, creation_slot, close_authority, reclaim_strategy
              FROM sponsored_accounts 
              WHERE pubkey = ?1"
         )?;
@@ -226,6 +249,10 @@ impl Database {
                 creation_slot: row.get::<_, Option<i64>>(7).ok()
                     .flatten()
                     .map(|s| s as u64),
+                close_authority: row.get(8).ok(),
+                reclaim_strategy: row.get::<_, Option<String>>(9).ok()
+                    .flatten()
+                    .and_then(|s| ReclaimStrategy::from_str(&s).ok()),
             })
         })?;
         
@@ -468,7 +495,7 @@ impl Database {
     pub fn get_all_accounts(&self) -> Result<Vec<SponsoredAccount>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT pubkey, created_at, closed_at, rent_lamports, data_size, status, creation_signature, creation_slot
+            "SELECT pubkey, created_at, closed_at, rent_lamports, data_size, status, creation_signature, creation_slot, close_authority, reclaim_strategy
              FROM sponsored_accounts 
              ORDER BY created_at DESC"
         )?;
@@ -494,6 +521,10 @@ impl Database {
                 creation_slot: row.get::<_, Option<i64>>(7).ok()
                     .flatten()
                     .map(|s| s as u64),
+                close_authority: row.get(8).ok(),
+                reclaim_strategy: row.get::<_, Option<String>>(9).ok()
+                    .flatten()
+                    .and_then(|s| ReclaimStrategy::from_str(&s).ok()),
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -501,6 +532,40 @@ impl Database {
         Ok(accounts)
     }
     
+    /// Find active accounts with rent lamports in a specific range
+    pub fn get_active_accounts_by_rent_range(&self, min: u64, max: u64) -> Result<Vec<SponsoredAccount>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT pubkey, created_at, closed_at, rent_lamports, data_size, status, 
+                    creation_signature, creation_slot, close_authority, reclaim_strategy
+             FROM sponsored_accounts 
+             WHERE status = 'Active' AND rent_lamports BETWEEN ?1 AND ?2"
+        )?;
+        
+        let accounts = stmt.query_map(params![min, max], |row| {
+             Ok(SponsoredAccount {
+                pubkey: row.get(0)?,
+                created_at: row.get::<_, String>(1)?.parse().unwrap(),
+                closed_at: row.get::<_, Option<String>>(2)?
+                    .map(|s| s.parse().unwrap()),
+                rent_lamports: row.get(3)?,
+                data_size: row.get(4)?,
+                status: AccountStatus::Active,
+                creation_signature: row.get(6).ok(),
+                creation_slot: row.get::<_, Option<i64>>(7).ok()
+                    .flatten()
+                    .map(|s| s as u64),
+                close_authority: row.get(8).ok(),
+                reclaim_strategy: row.get::<_, Option<String>>(9).ok()
+                    .flatten()
+                    .and_then(|s| ReclaimStrategy::from_str(&s).ok()),
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+        
+        Ok(accounts)
+    }
+
     /// Get checkpoint metadata (useful for debugging)
     pub fn get_checkpoint_info(&self) -> Result<Vec<(String, String, String)>> {
         let conn = self.conn.lock().unwrap();
@@ -561,7 +626,7 @@ impl Database {
         
         let mut stmt = conn.prepare(
             "SELECT pubkey, created_at, closed_at, rent_lamports, data_size, status, 
-                    creation_signature, creation_slot
+                    creation_signature, creation_slot, close_authority, reclaim_strategy
              FROM sponsored_accounts 
              WHERE status = 'Closed' AND closed_at > ?1
              ORDER BY closed_at DESC"
@@ -580,6 +645,10 @@ impl Database {
                 creation_slot: row.get::<_, Option<i64>>(7).ok()
                     .flatten()
                     .map(|s| s as u64),
+                close_authority: row.get(8).ok(),
+                reclaim_strategy: row.get::<_, Option<String>>(9).ok()
+                    .flatten()
+                    .and_then(|s| ReclaimStrategy::from_str(&s).ok()),
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -676,7 +745,7 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT pubkey, created_at, closed_at, rent_lamports, data_size, status, 
-                    creation_signature, creation_slot
+                    creation_signature, creation_slot, close_authority, reclaim_strategy
              FROM sponsored_accounts 
              WHERE reclaim_strategy = ?1"
         )?;
@@ -702,6 +771,10 @@ impl Database {
                 creation_slot: row.get::<_, Option<i64>>(7).ok()
                     .flatten()
                     .map(|s| s as u64),
+                close_authority: row.get(8).ok(),
+                reclaim_strategy: row.get::<_, Option<String>>(9).ok()
+                    .flatten()
+                    .and_then(|s| ReclaimStrategy::from_str(&s).ok()),
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -717,9 +790,19 @@ impl Database {
         
         for account in accounts {
             tx.execute(
-                "INSERT OR REPLACE INTO sponsored_accounts 
-                 (pubkey, created_at, closed_at, rent_lamports, data_size, status, creation_signature, creation_slot) 
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                "INSERT INTO sponsored_accounts 
+                 (pubkey, created_at, closed_at, rent_lamports, data_size, status, creation_signature, creation_slot, close_authority, reclaim_strategy) 
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                 ON CONFLICT(pubkey) DO UPDATE SET
+                    created_at = excluded.created_at,
+                    closed_at = excluded.closed_at,
+                    rent_lamports = excluded.rent_lamports,
+                    data_size = excluded.data_size,
+                    status = excluded.status,
+                    creation_signature = excluded.creation_signature,
+                    creation_slot = excluded.creation_slot,
+                    close_authority = excluded.close_authority,
+                    reclaim_strategy = excluded.reclaim_strategy",
                 params![
                     account.pubkey,
                     account.created_at.to_rfc3339(),
@@ -729,6 +812,8 @@ impl Database {
                     format!("{:?}", account.status),
                     account.creation_signature,
                     account.creation_slot.map(|s| s as i64),
+                    account.close_authority,
+                    account.reclaim_strategy.as_ref().map(|s| s.to_string()),
                 ],
             )?;
             saved += 1;

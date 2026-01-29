@@ -4,6 +4,7 @@ use solana_sdk::{
     transaction::Transaction,
     instruction::Instruction,
 };
+use spl_token::state::AccountState;
 use crate::{
     error::Result,
     solana::client::SolanaRpcClient,
@@ -120,9 +121,9 @@ pub async fn reclaim_account(
         }
         
         // Check account state (offset 108, 1 byte)
-        // 0 = Uninitialized, 1 = Initialized, 2 = Frozen
+        // AccountState: Uninitialized = 0, Initialized = 1, Frozen = 2
         let state = account_data.data[108];
-        if state == 2 {
+        if state == AccountState::Frozen as u8 {
             return Err(crate::error::ReclaimError::NotEligible(
                 "Cannot close frozen token account".to_string()
             ));
@@ -183,7 +184,19 @@ pub async fn reclaim_account(
         }
     }
     
-    let instruction = self.build_close_instruction(account_pubkey, account_type, balance)?;
+    // Re-verify balance before building transaction (prevent race conditions)
+    let current_balance = self.rpc_client.get_balance(account_pubkey).await?;
+    if current_balance == 0 {
+        warn!("Account {} balance changed to zero before transaction", account_pubkey);
+        return Ok(ReclaimResult {
+            signature: None,
+            amount_reclaimed: 0,
+            account: *account_pubkey,
+            dry_run: self.dry_run,
+        });
+    }
+    
+    let instruction = self.build_close_instruction(account_pubkey, account_type, current_balance)?;
     
     if self.dry_run {
         info!("DRY RUN: Would reclaim {} lamports from {}", balance, account_pubkey);

@@ -12,6 +12,8 @@ pub struct SponsoredAccount {
     pub status: AccountStatus,
     pub creation_signature: Option<String>,
     pub creation_slot: Option<u64>,
+    pub close_authority: Option<String>,
+    pub reclaim_strategy: Option<ReclaimStrategy>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -62,6 +64,19 @@ impl std::fmt::Display for ReclaimStrategy {
     }
 }
 
+impl std::str::FromStr for ReclaimStrategy {
+    type Err = ();
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "ActiveReclaim" => Ok(ReclaimStrategy::ActiveReclaim),
+            "PassiveMonitoring" => Ok(ReclaimStrategy::PassiveMonitoring),
+            "Unrecoverable" => Ok(ReclaimStrategy::Unrecoverable),
+            _ => Ok(ReclaimStrategy::Unknown),
+        }
+    }
+}
+
 
 impl SponsoredAccount {
     #[allow(dead_code)]
@@ -74,7 +89,9 @@ impl SponsoredAccount {
             data_size,
             status: AccountStatus::Active,
             creation_signature: None,  
-            creation_slot: None,        
+            creation_slot: None,
+            close_authority: None,
+            reclaim_strategy: None,
         }
     }
     

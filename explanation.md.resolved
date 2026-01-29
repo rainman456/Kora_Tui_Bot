@@ -1,0 +1,512 @@
+# Kora Rent Reclaim Bot - Codebase Explanation
+
+## Overview
+
+This is a Rust-based automated rent reclaim bot for Solana's Kora network. The bot monitors accounts sponsored by a Kora node, detects when they're closed or eligible for cleanup, and reclaims the locked rent SOL back to the operator's treasury.
+
+**Key Problem**: When Kora nodes sponsor account creation on Solana, SOL gets locked as rent. Over time, many accounts become inactive/closed, but operators don't actively track or reclaim this rent, leading to silent capital loss.
+
+**Solution**: This bot automates rent reclamation with monitoring, eligibility checking, batch processing, and notifications.
+
+---
+
+## Architecture Overview
+
+The codebase is organized into modular components:
+
+```
+src/
+├── main.rs              # Entry point, CLI commands, orchestration
+├── cli/                 # Command-line interface definitions
+├── config.rs            # Configuration management
+├── error.rs             # Error types and handling
+├── kora/                # Kora-specific logic (monitoring, account types)
+├── reclaim/             # Reclaim engine, eligibility, batch processing
+├── solana/              # Solana RPC client, account operations, rent calculations
+├── storage/             # SQLite database for tracking accounts
+├── telegram/            # Telegram bot interface and notifications
+├── treasury/            # Treasury monitoring and passive reclaim detection
+├── tui/                 # Terminal UI dashboard
+└── utils.rs             # Utility functions (formatting, tables, confirmations)
+```
+
+---
+
+## File-by-File Explanation
+
+### 1. [src/main.rs](file:///home/james/projects/korabot/src/main.rs) - Application Entry Point
+
+**Purpose**: The main orchestrator that ties all components together. Handles CLI command routing and implements core workflows.
+
+#### Key Responsibilities:
+
+1. **Application Bootstrap** (lines 20-105)
+   - Initializes tracing/logging with `tracing_subscriber`
+   - Parses CLI commands using `clap`
+   - Loads configuration from `Config::load()`
+   - Routes commands to appropriate handlers
+
+2. **Command Implementations**:
+
+   **a) [scan_accounts()](file:///home/james/projects/korabot/src/main.rs#113-350) (lines 113-349)**
+   - **Purpose**: Discovers sponsored accounts and checks eligibility for reclaim
+   - **Logic Flow**:
+     1. Creates Solana RPC client and Kora monitor
+     2. Loads existing accounts from database to avoid re-processing
+     3. Calls `monitor.get_sponsored_accounts()` to discover accounts from transaction history
+     4. Calculates total locked rent across all accounts
+     5. Saves new accounts to database using `db.save_account()`
+     6. Checks each account's active status via `rpc_client.is_account_active()`
+     7. Uses [EligibilityChecker](file:///home/james/projects/korabot/src/reclaim/eligibility.rs#13-17) to determine if accounts can be reclaimed
+     8. Batch fetches account balances for efficiency
+     9. **Reclaim Strategy Analysis** (lines 264-297):
+        - Determines if account can be actively reclaimed (operator has close authority)
+        - Identifies passive monitoring cases (user controls account)
+        - Marks unrecoverable accounts (system accounts, permanently locked)
+     10. Displays results in formatted tables
+   
+   - **Database Usage**:
+     - `get_all_accounts()` - Cache existing accounts
+     - `get_last_processed_slot()` - Resume from checkpoint
+     - `save_account()` - Store discovered accounts
+     - `update_account_status()` - Mark closed accounts
+     - `update_account_authority()` - Store reclaim strategy
+
+   **b) [reclaim_account()](file:///home/james/projects/korabot/src/main.rs#351-484) (lines 351-483)**
+   - **Purpose**: Manually reclaim a specific account
+   - **Logic Flow**:
+     1. Validates pubkey format
+     2. Checks database for account history
+     3. Verifies Kora sponsorship via `monitor.is_kora_sponsored()`
+     4. Checks eligibility with detailed reason
+     5. Gets account balance
+     6. Prompts for confirmation (unless `--yes` flag)
+     7. Loads treasury keypair
+     8. Executes reclaim via `ReclaimEngine`
+     9. Updates database status to `Reclaimed`
+     10. Saves reclaim operation record
+     11. Sends Telegram notification if configured
+
+   **c) [run_auto_service()](file:///home/james/projects/korabot/src/main.rs#649-931) (lines 649-930)**
+   - **Purpose**: Automated continuous scanning and reclaiming
+   - **Logic Flow**:
+     1. Runs in infinite loop with configurable interval
+     2. **Incremental Scanning** (lines 705-757):
+        - Gets last processed signature from database
+        - Scans only new transactions since checkpoint
+        - Batch saves discovered accounts
+        - Updates checkpoint after each cycle
+     3. Checks eligibility for all discovered accounts
+     4. Skips already reclaimed accounts
+     5. Sends scan complete notification
+     6. **Batch Reclaim Processing** (lines 784-923):
+        - Loads treasury keypair
+        - Creates `ReclaimEngine` and `BatchProcessor`
+        - Processes all eligible accounts in batches
+        - Updates database for successful reclaims
+        - Sends notifications for high-value reclaims
+        - Sends batch summary notification
+     7. **Passive Reclaim Detection** (lines 810-850):
+        - Monitors treasury for unexpected balance increases
+        - Attributes increases to accounts that users closed
+        - Saves passive reclaim records
+        - Sends notifications
+     8. Sleeps for configured interval before next cycle
+
+   **d) [check_passive_reclaims()](file:///home/james/projects/korabot/src/main.rs#581-642) (lines 581-641)**
+   - **Purpose**: Check treasury for passive reclaims (rent returned when users close accounts)
+   - **Logic Flow**:
+     1. Creates `TreasuryMonitor` instance
+     2. Calls `check_for_passive_reclaims()` to detect balance increases
+     3. Displays detected reclaims with confidence levels
+     4. Saves to database with attributed accounts
+     5. Shows total passive reclaims recorded
+
+   **e) [show_stats()](file:///home/james/projects/korabot/src/main.rs#931-1172) (lines 931-1171)**
+   - **Purpose**: Display comprehensive statistics
+   - **Outputs**:
+     - Account counts (total, active, closed, reclaimed)
+     - **Reclaim Strategy Breakdown**:
+       - Active reclaim accounts (operator can reclaim)
+       - Passive monitoring accounts (wait for user to close)
+       - Unrecoverable accounts (permanently locked)
+     - Active reclaim operations (count, total SOL, average)
+     - Passive reclaim totals
+     - Total recovered SOL (active + passive)
+     - Scanning progress (checkpoints, slots processed)
+     - Recent passive reclaim history
+     - Recent active reclaim operations
+     - Recommendations based on current state
+
+   **f) [list_accounts()](file:///home/james/projects/korabot/src/main.rs#1173-1292) (lines 1173-1291)**
+   - **Purpose**: List tracked accounts with filtering
+   - **Features**:
+     - Filter by status: active, closed, reclaimed, all
+     - JSON or table output format
+     - Detailed mode shows creation signature and slot
+     - Uses `get_all_accounts()` and `get_account_creation_details()`
+
+   **g) [reset_checkpoints()](file:///home/james/projects/korabot/src/main.rs#1293-1331) (lines 1293-1330)**
+   - **Purpose**: Clear scanning checkpoints to force full rescan
+   - **Safety**: Requires confirmation unless `--yes` flag
+   - **Use case**: When you want to re-scan from the beginning
+
+   **h) [show_checkpoints()](file:///home/james/projects/korabot/src/main.rs#1332-1426) (lines 1332-1425)**
+   - **Purpose**: Display current scanning state
+   - **Shows**:
+     - All checkpoint key-value pairs
+     - Last processed slot vs current network slot
+     - Estimated time behind
+     - Scanning mode (incremental vs full)
+
+   **i) [initialize()](file:///home/james/projects/korabot/src/main.rs#1427-1473) (lines 1428-1472)**
+   - **Purpose**: Initial setup and configuration display
+   - **Shows**: RPC URL, network, operator, treasury, settings, checkpoint state
+
+   **j) [send_daily_summary()](file:///home/james/projects/korabot/src/main.rs#1474-1507) (lines 1474-1506)**
+   - **Purpose**: Generate and send daily summary via Telegram
+   - **Logic**: Filters operations from last 24 hours, calculates totals, sends notification
+
+#### Critical Design Patterns:
+
+1. **Incremental Scanning**: Uses checkpoints to avoid re-scanning entire transaction history
+2. **Batch Processing**: Fetches multiple accounts in one RPC call for efficiency
+3. **Database Caching**: Stores discovered accounts to avoid redundant processing
+4. **Strategy Classification**: Categorizes accounts by reclaim possibility
+5. **Dual Reclaim Tracking**: Monitors both active (bot-initiated) and passive (user-initiated) reclaims
+6. **Error Resilience**: Auto service continues on errors, sends notifications
+
+#### Potential Logic Issues to Review:
+
+1. **Line 448**: Hardcoded `AccountType::SplToken` - Should this be determined dynamically?
+   ```rust
+   let account_type = kora::AccountType::SplToken;
+   ```
+
+2. **Line 413**: Fallback creation date assumes 365 days old - Could be inaccurate
+   ```rust
+   let created_at = chrono::Utc::now() - chrono::Duration::days(365);
+   ```
+
+3. **Lines 810-816**: Duplicate `treasury_wallet` and `treasury_monitor` creation in auto service
+   - Already created earlier in the function, this looks redundant
+
+4. **Line 266**: `eligibility_checker` created twice in [scan_accounts()](file:///home/james/projects/korabot/src/main.rs#113-350)
+   - Once at line 193, again at line 266
+
+5. **No rate limiting visible**: Multiple RPC calls in loops could hit rate limits
+   - Though `SolanaRpcClient` has `rate_limit_delay_ms` config
+
+6. **Error handling in auto service**: Continues on most errors, but could mask persistent issues
+   - Good for uptime, but might hide configuration problems
+
+---
+
+---
+
+## 2. `src/reclaim/` Module - Core Reclaim Logic
+
+The reclaim module contains the core business logic for determining eligibility and executing rent reclamation.
+
+**Files in this module:**
+- `mod.rs` - Module exports
+- `eligibility.rs` - Eligibility checking logic ✅ **EXPLAINED BELOW**
+- `engine.rs` - Reclaim execution engine
+- `batch.rs` - Batch processing
+
+---
+
+### 2.1 `src/reclaim/eligibility.rs` - Eligibility Checker
+
+**Purpose**: Determines which accounts are eligible for rent reclamation based on multiple criteria.
+
+**Key Structure:**
+```rust
+pub struct EligibilityChecker {
+    rpc_client: SolanaRpcClient,
+    config: Config,
+}
+```
+
+#### Core Methods:
+
+**1. `is_eligible()` (lines 23-96) - Main Eligibility Check**
+
+This is the primary method that determines if an account can be reclaimed. It performs checks in this order:
+
+```
+1. Whitelist check → if whitelisted, NEVER reclaim (protected accounts)
+2. Blacklist check → if blacklisted, NEVER reclaim (explicitly excluded)
+3. Account existence → must exist on-chain
+4. Balance check → must have non-zero balance
+5. Account type check → must be reclaimable type (SPL Token only)
+6. Close authority check → operator must have close authority (for SPL tokens)
+7. Inactivity period → must be inactive for min_inactive_days
+8. Recent activity check → must have no recent transactions
+9. Empty account check → either truly empty OR has minimal balance
+```
+
+**Logic Flow:**
+- **Lines 25-28**: Whitelist protection - accounts that should never be touched
+- **Lines 31-34**: Blacklist exclusion - explicitly forbidden accounts
+- **Lines 36-40**: Existence check - can't reclaim what doesn't exist
+- **Lines 45-48**: Zero balance check - nothing to reclaim
+- **Lines 51-55**: Account type determination and reclaimability
+- **Lines 58-63**: SPL Token close authority verification
+- **Lines 66-71**: Age check - account must be old enough
+- **Lines 74-78**: Activity check - must be truly inactive
+- **Lines 80-92**: Final eligibility based on balance and data
+
+**2. `determine_account_type()` (lines 110-118) - Account Classification**
+
+Determines what type of Solana account this is:
+
+```rust
+- SPL Token: owner == spl_token::id() && data.len() == 165
+- System: owner == system_program::id()
+- Other: any other program-owned account
+```
+
+**Critical Logic**: Only checks for exact 165-byte SPL Token accounts. This is the standard SPL Token account size.
+
+**3. `is_reclaimable_type()` (lines 120-126) - Type Filter**
+
+**IMPORTANT LOGIC**:
+```rust
+System accounts → false (can't reclaim, user controls)
+SPL Token accounts → true (can reclaim if we have authority)
+Other accounts → false (unknown program logic)
+```
+
+This is a **critical safety feature** - the bot will ONLY reclaim SPL Token accounts, never system accounts or custom program accounts.
+
+**4. `determine_reclaim_strategy()` (lines 132-179) - Strategy Classification**
+
+This method categorizes accounts into reclaim strategies:
+
+**Strategy Types:**
+- **ActiveReclaim**: Operator has close authority, can reclaim immediately
+- **PassiveMonitoring**: User controls account, wait for them to close it
+- **Unrecoverable**: System accounts or permanently locked
+- **Unknown**: Custom programs with unclear logic
+
+**Logic by Account Type:**
+- **System accounts** (lines 145-151): Always `Unrecoverable` - user has the keys
+- **SPL Token accounts** (lines 153-169):
+  - If operator has close authority → `ActiveReclaim`
+  - Otherwise → `PassiveMonitoring` (track who has authority)
+- **Other accounts** (lines 171-177): `Unknown` - can't determine
+
+**5. `has_close_authority()` (lines 213-249) - SPL Token Authority Check**
+
+**Critical SPL Token Account Parsing Logic:**
+
+SPL Token accounts have a specific binary layout:
+```
+Bytes 0-31:   Mint address
+Bytes 32-63:  Owner address
+Bytes 64-71:  Amount (u64)
+Bytes 72-104: Delegate (Option<Pubkey>)
+Bytes 105:    State (u8)
+Bytes 106-128: IsNative (Option<u64>)
+Bytes 129:    CloseAuthority option flag (0 or 1)
+Bytes 130-161: CloseAuthority pubkey (if flag == 1)
+```
+
+**Logic:**
+- **Line 219**: Verify account is at least 165 bytes (standard SPL Token size)
+- **Line 223**: Check if close authority is set (byte 129 == 1)
+- **Lines 225-236**: If set, parse bytes 130-162 as pubkey and compare to operator
+- **Lines 238-248**: If not set, check if operator is the owner (bytes 32-64)
+
+**6. `get_token_close_authority()` (lines 182-207) - Extract Authority**
+
+Similar parsing logic to extract the actual close authority pubkey:
+- If close authority is set → return that pubkey
+- If not set → return the owner pubkey (owner can close)
+
+**7. `check_inactivity()` (lines 251-277) - Activity Verification**
+
+Checks if account has been inactive:
+- Uses `AccountDiscovery.get_last_transaction_time()` to find last activity
+- Compares against `min_inactive_days` configuration
+- Returns `true` if no transaction history found (assume inactive)
+
+**8. `get_eligibility_reason()` (lines 291-363) - Human-Readable Explanation**
+
+Provides detailed reason for eligibility/ineligibility:
+- Runs through same checks as `is_eligible()`
+- Returns descriptive strings for each failure case
+- Useful for CLI output and debugging
+
+#### Potential Logic Issues:
+
+**🚨 CRITICAL Issue #0: Whitelist/Blacklist Redundancy (lines 25-34)**
+```rust
+// Both do the EXACT same thing!
+if self.is_whitelisted(pubkey) {
+    return Ok(false);  // Don't reclaim
+}
+if self.is_blacklisted(pubkey) {
+    return Ok(false);  // Don't reclaim
+}
+```
+**Problem**: This is a **semantic error**. Both whitelist and blacklist prevent reclaiming, making them functionally identical and redundant.
+
+**Expected Behavior**:
+- **Whitelist** should mean "accounts ALLOWED to be reclaimed" (opt-in model)
+- **Blacklist** should mean "accounts FORBIDDEN from reclaim" (opt-out model)
+
+**Current Behavior**: Both are "protected accounts" lists - this is confusing and redundant.
+
+**Risk**: CRITICAL - Semantic confusion could lead to:
+1. Operators thinking whitelisted accounts WILL be reclaimed (opposite of actual behavior)
+2. Maintaining two lists that do the same thing
+3. Configuration errors where accounts are on both lists
+
+**Recommendation**: 
+- **Option A**: Invert whitelist logic - only reclaim accounts ON the whitelist
+- **Option B**: Remove one list entirely - just have "protected_accounts"
+- **Option C**: Clarify documentation that BOTH are protection lists (but why have two?)
+
+**Correct Implementation Options:**
+
+**Option A: Standard Whitelist/Blacklist Semantics**
+```rust
+pub async fn is_eligible(&self, pubkey: &Pubkey, created_at: DateTime<Utc>) -> Result<bool> {
+    // Blacklist check - explicitly forbidden accounts (NEVER reclaim)
+    if self.is_blacklisted(pubkey) {
+        debug!("Account {} is blacklisted", pubkey);
+        return Ok(false);
+    }
+    
+    // Whitelist check - if whitelist exists and is not empty, ONLY reclaim whitelisted accounts
+    if !self.config.reclaim.whitelist.is_empty() {
+        if !self.is_whitelisted(pubkey) {
+            debug!("Account {} not on whitelist", pubkey);
+            return Ok(false);
+        }
+    }
+    
+    // Continue with other eligibility checks...
+}
+```
+**Logic**: 
+- Blacklist = hard block (never reclaim these)
+- Whitelist = opt-in mode (if whitelist is configured, ONLY reclaim these)
+- If whitelist is empty, reclaim all eligible accounts (except blacklisted)
+
+**Option B: Single Protection List (Simplest)**
+```rust
+pub async fn is_eligible(&self, pubkey: &Pubkey, created_at: DateTime<Utc>) -> Result<bool> {
+    // Protected accounts - never reclaim
+    if self.is_protected(pubkey) {
+        debug!("Account {} is protected", pubkey);
+        return Ok(false);
+    }
+    
+    // Continue with other eligibility checks...
+}
+
+fn is_protected(&self, pubkey: &Pubkey) -> bool {
+    self.config.reclaim.protected_accounts
+        .iter()
+        .any(|addr| addr == &pubkey.to_string())
+}
+```
+**Logic**: One simple list of accounts to never touch. Clear and unambiguous.
+
+**Option C: Dual Lists with Clear Purpose**
+```rust
+pub async fn is_eligible(&self, pubkey: &Pubkey, created_at: DateTime<Utc>) -> Result<bool> {
+    // Critical accounts - NEVER reclaim (treasury, hot wallets, etc.)
+    if self.is_critical_account(pubkey) {
+        debug!("Account {} is critical", pubkey);
+        return Ok(false);
+    }
+    
+    // Temporarily excluded - skip for now (maybe user is investigating)
+    if self.is_temporarily_excluded(pubkey) {
+        debug!("Account {} is temporarily excluded", pubkey);
+        return Ok(false);
+    }
+    
+    // Continue with other eligibility checks...
+}
+```
+**Logic**: Two lists with distinct purposes - permanent protection vs temporary exclusion.
+
+**Recommended Fix: Option A**
+This maintains backward compatibility while fixing the semantic confusion:
+- Rename current "whitelist" to "protected_accounts" 
+- Remove "blacklist" (it's redundant)
+- OR implement proper whitelist logic as shown in Option A
+
+**Issue #1: Hardcoded SPL Token Size (line 111)**
+```rust
+if account.owner == spl_token::id() && account.data.len() == 165
+```
+**Problem**: This assumes ALL SPL Token accounts are exactly 165 bytes. While this is the standard size, there could be edge cases with different sizes.
+**Risk**: Low - 165 is the standard SPL Token account size
+**Recommendation**: Consider using `>= 165` or proper SPL Token deserialization
+
+**Issue #2: Byte Offset Hardcoding (lines 190, 199, 226, 239)**
+```rust
+let close_authority_bytes: [u8; 32] = account.data[130..162]
+let owner_bytes: [u8; 32] = account.data[32..64]
+```
+**Problem**: Manual byte slicing is fragile and error-prone
+**Risk**: Medium - if SPL Token format changes, this breaks
+**Recommendation**: Use `spl_token::state::Account::unpack()` for proper deserialization
+**Current Status**: Works but not future-proof
+
+**Issue #3: Default Pubkey in AccountDiscovery (line 254)**
+```rust
+let discovery = AccountDiscovery::new(
+    self.rpc_client.clone(),
+    Pubkey::default(),  // ← What is this for?
+);
+```
+**Problem**: Unclear why a default pubkey is passed
+**Risk**: Low - likely unused parameter
+**Recommendation**: Check AccountDiscovery implementation
+
+**Issue #4: Balance Threshold Logic (lines 89-92)**
+```rust
+if account.lamports <= min_balance * 2 {
+    return Ok(true);
+}
+```
+**Problem**: Why `min_balance * 2`? This seems arbitrary
+**Risk**: Medium - could reclaim accounts with legitimate balances
+**Recommendation**: Document why 2x rent exemption is the threshold
+
+**Issue #5: Inactivity Fallback (line 74)**
+```rust
+let is_inactive = self.check_inactivity(pubkey).await.unwrap_or(false);
+```
+**Problem**: If activity check fails, assumes account is ACTIVE (false)
+**Risk**: Medium - network errors could prevent reclaiming eligible accounts
+**Recommendation**: Consider logging errors or using a different fallback
+
+**Issue #6: No Token Balance Check**
+```rust
+// Missing: Check if SPL Token account has zero token balance
+```
+**Problem**: The code checks lamport balance but not the actual token amount in the account
+**Risk**: High - could try to reclaim accounts that still hold tokens
+**Recommendation**: Parse token amount from bytes 64-71 and verify it's zero
+
+#### Security Features:
+
+✅ **Whitelist Protection**: Prevents accidental reclaim of critical accounts
+✅ **Type Safety**: Only reclaims SPL Token accounts, never system accounts
+✅ **Authority Verification**: Confirms operator has close authority before reclaiming
+✅ **Inactivity Requirements**: Ensures accounts are truly abandoned
+✅ **Balance Checks**: Verifies there's something to reclaim
+
+---
+
+**Ready for the next file in the reclaim module?** 
+
+Next: `src/reclaim/engine.rs` - The actual reclaim execution logic

@@ -11,17 +11,22 @@ use solana_transaction_status::{
 use crate::{
     error::Result,
     solana::client::SolanaRpcClient,
-    utils::RateLimiter, // ✅ USE: Import RateLimiter
+    utils::RateLimiter, 
 };
-use tracing::{info, debug};
+use tracing::{info, debug, warn};
 use std::str::FromStr;
+use std::collections::HashSet;
 use chrono::{DateTime, Utc};
+
+// Constants for hardcoded values
+const ATA_RENT_EXEMPTION: u64 = 2_039_280; // ~0.00203928 SOL
+const ATA_SIZE: usize = 165;
 
 /// Discovers accounts created/sponsored by a specific fee payer
 pub struct AccountDiscovery {
     rpc_client: SolanaRpcClient,
     fee_payer: Pubkey,
-    rate_limiter: RateLimiter, // ✅ USE: Add RateLimiter field
+    rate_limiter: RateLimiter, 
 }
 
 /// Information about a discovered sponsored account
@@ -51,7 +56,7 @@ impl AccountDiscovery {
         Self { 
             rpc_client, 
             fee_payer,
-            rate_limiter: RateLimiter::new(rate_limit_ms), // ✅ USE: new()
+            rate_limiter: RateLimiter::new(rate_limit_ms), 
         }
     }
     
@@ -63,6 +68,7 @@ impl AccountDiscovery {
         info!("Discovering sponsored accounts for fee payer: {}", self.fee_payer);
         
         let mut all_sponsored = Vec::new();
+        let mut seen_accounts = HashSet::new();  // Track seen accounts to prevent duplicates
         let mut before_signature: Option<Signature> = None;
         const BATCH_SIZE: usize = 1000;
         
@@ -71,7 +77,7 @@ impl AccountDiscovery {
         while total_fetched < max_signatures {
             let limit = std::cmp::min(BATCH_SIZE, max_signatures - total_fetched);
             
-            // ✅ USE: wait() - Rate limit signature fetches
+            
             self.rate_limiter.wait().await;
             
             // Fetch batch of signatures
@@ -101,7 +107,12 @@ impl AccountDiscovery {
                 // Get full transaction details
                 if let Some(tx) = self.rpc_client.get_transaction(&signature).await? {
                     let sponsored = self.parse_transaction_for_creations(&tx, signature).await?;
-                    all_sponsored.extend(sponsored);
+                    // Only add accounts we haven't seen before
+                    for account_info in sponsored {
+                        if seen_accounts.insert(account_info.pubkey) {
+                            all_sponsored.push(account_info);
+                        }
+                    }
                 }
             }
             
@@ -131,6 +142,7 @@ impl AccountDiscovery {
         info!("Discovering new sponsored accounts since signature: {}", since_signature);
         
         let mut all_sponsored = Vec::new();
+        let mut seen_accounts = HashSet::new();  // Track seen accounts to prevent duplicates
         let mut before_signature: Option<Signature> = None;
         const BATCH_SIZE: usize = 1000;
         
@@ -170,7 +182,12 @@ impl AccountDiscovery {
                 // Get full transaction details
                 if let Some(tx) = self.rpc_client.get_transaction(&signature).await? {
                     let sponsored = self.parse_transaction_for_creations(&tx, signature).await?;
-                    all_sponsored.extend(sponsored);
+                    // Only add accounts we haven't seen before
+                    for account_info in sponsored {
+                        if seen_accounts.insert(account_info.pubkey) {
+                            all_sponsored.push(account_info);
+                        }
+                    }
                 }
             }
             
@@ -201,8 +218,25 @@ impl AccountDiscovery {
         
         let slot = tx.slot;
         let block_time = tx.block_time.unwrap_or(0);
-        let creation_time = DateTime::from_timestamp(block_time, 0)
-            .unwrap_or_else(|| Utc::now());
+        
+        // CRITICAL: Do NOT use Utc::now() as fallback - it breaks inactivity calculations!
+        // If block_time is missing, estimate from slot (each slot is ~400ms)
+        let creation_time = if block_time > 0 {
+            DateTime::from_timestamp(block_time, 0)
+                .unwrap_or_else(|| {
+                    warn!("Invalid block_time {} for slot {}, using slot-based estimation", block_time, slot);
+                    // Estimate: slot 0 was around Sept 2020, each slot ~400ms
+                    let estimated_seconds = (slot as i64 * 400) / 1000;
+                    DateTime::from_timestamp(1600000000 + estimated_seconds, 0)
+                        .unwrap_or_else(|| DateTime::from_timestamp(0, 0).unwrap())
+                })
+        } else {
+            warn!("Missing block_time for slot {}, using slot-based estimation", slot);
+            // Estimate from slot number
+            let estimated_seconds = (slot as i64 * 400) / 1000;
+            DateTime::from_timestamp(1600000000 + estimated_seconds, 0)
+                .unwrap_or_else(|| DateTime::from_timestamp(0, 0).unwrap())
+        };
         
         let transaction = match &tx.transaction.transaction {
             solana_transaction_status::EncodedTransaction::Json(ui_tx) => ui_tx,
@@ -288,8 +322,8 @@ impl AccountDiscovery {
                                                 creation_signature: signature,
                                                 creation_slot: slot,
                                                 creation_time,
-                                                initial_balance: 2039280, // Typical ATA rent (~0.00203928 SOL)
-                                                data_size: 165,
+                                                initial_balance: ATA_RENT_EXEMPTION,
+                                                data_size: ATA_SIZE,
                                                 account_type: AccountType::SplToken,
                                             }));
                                         }
@@ -357,8 +391,8 @@ impl AccountDiscovery {
                                                 creation_signature: signature,
                                                 creation_slot: slot,
                                                 creation_time,
-                                                initial_balance: 0,
-                                                data_size: 165,
+                                                initial_balance: 0, // We can't determine balance from initializeAccount alone
+                                                data_size: ATA_SIZE,
                                                 account_type: AccountType::SplToken,
                                             }));
                                         }

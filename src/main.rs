@@ -43,9 +43,9 @@ async fn main() {
             scan_accounts(&config, verbose, dry_run, limit).await
         }
 
-          Commands::Stats { format } => {
+          Commands::Stats { format, total } => {
         info!("Generating statistics...");
-        show_stats(&config, &format).await
+        show_stats(&config, &format, total).await
     }
 
     Commands::PassiveCheck => {
@@ -928,8 +928,23 @@ match treasury_monitor.check_for_passive_reclaims().await {
         tokio::time::sleep(tokio::time::Duration::from_secs(actual_interval)).await;
     }
 }
-async fn show_stats(config: &Config, format: &str) -> error::Result<()> {
+async fn show_stats(config: &Config, format: &str, total_only: bool) -> error::Result<()> {
     let db = storage::Database::new(&config.database.path)?;
+    
+    // ✅ USE: get_total_reclaimed for lightweight query
+    if total_only {
+        let total = db.get_total_reclaimed()?;
+        if format == "json" {
+            println!("{}", serde_json::json!({
+                "total_reclaimed": total,
+                "total_reclaimed_sol": utils::format_sol(total)
+            }));
+        } else {
+            println!("Total Reclaimed: {}", utils::format_sol(total).green().bold());
+        }
+        return Ok(());
+    }
+
     let stats = db.get_stats()?;
     
     if format == "json" {

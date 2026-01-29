@@ -106,16 +106,25 @@ impl TreasuryReconciliation {
         accounts: &[SponsoredAccount],
         tolerance: u64,
     ) -> Option<(Vec<Pubkey>, u64)> {
+        // Limit the search space to prevent O(n^3) explosion
+        // Taking top 50 most recent closed accounts is a reasonable heuristic
+        let safe_limit = 50;
+        let p_accounts = if accounts.len() > safe_limit {
+            &accounts[0..safe_limit]
+        } else {
+            accounts
+        };
+
         // Try pairs
-        for i in 0..accounts.len() {
-            for j in (i + 1)..accounts.len() {
-                let sum = accounts[i].rent_lamports + accounts[j].rent_lamports;
+        for i in 0..p_accounts.len() {
+            for j in (i + 1)..p_accounts.len() {
+                let sum = p_accounts[i].rent_lamports + p_accounts[j].rent_lamports;
                 let diff = if sum > target { sum - target } else { target - sum };
                 
                 if diff <= tolerance {
                     let pubkeys = vec![
-                        accounts[i].pubkey.parse().ok()?,
-                        accounts[j].pubkey.parse().ok()?,
+                        p_accounts[i].pubkey.parse().ok()?,
+                        p_accounts[j].pubkey.parse().ok()?,
                     ];
                     return Some((pubkeys, sum));
                 }
@@ -123,19 +132,19 @@ impl TreasuryReconciliation {
         }
         
         // Try triplets
-        for i in 0..accounts.len() {
-            for j in (i + 1)..accounts.len() {
-                for k in (j + 1)..accounts.len() {
-                    let sum = accounts[i].rent_lamports 
-                        + accounts[j].rent_lamports 
-                        + accounts[k].rent_lamports;
+        for i in 0..p_accounts.len() {
+            for j in (i + 1)..p_accounts.len() {
+                for k in (j + 1)..p_accounts.len() {
+                    let sum = p_accounts[i].rent_lamports 
+                        + p_accounts[j].rent_lamports 
+                        + p_accounts[k].rent_lamports;
                     let diff = if sum > target { sum - target } else { target - sum };
                     
                     if diff <= tolerance {
                         let pubkeys = vec![
-                            accounts[i].pubkey.parse().ok()?,
-                            accounts[j].pubkey.parse().ok()?,
-                            accounts[k].pubkey.parse().ok()?,
+                            p_accounts[i].pubkey.parse().ok()?,
+                            p_accounts[j].pubkey.parse().ok()?,
+                            p_accounts[k].pubkey.parse().ok()?,
                         ];
                         return Some((pubkeys, sum));
                     }

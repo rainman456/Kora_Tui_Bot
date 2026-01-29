@@ -60,25 +60,77 @@ impl TreasuryMonitor {
     }
     
     /// Correlate balance increase with recently closed accounts
+    /// Correlate balance increase with recently closed accounts
     async fn correlate_balance_increase(
         &self,
         increase: u64,
     ) -> Result<Vec<super::reconciliation::PassiveReclaim>> {
         // Get accounts that changed to Closed status recently (last 24 hours)
-        let recently_closed = self.db.get_recently_closed_accounts(24)?;
+        let mut closed_accounts = self.db.get_recently_closed_accounts(24)?;
         
-        if recently_closed.is_empty() {
-            info!("No recently closed accounts to correlate with balance increase");
-            return Ok(vec![]);
+        // 1. Try to match with known closed accounts
+        let mut matches = if !closed_accounts.is_empty() {
+             debug!("Found {} recently closed accounts", closed_accounts.len());
+             super::reconciliation::TreasuryReconciliation::match_amount_to_accounts(
+                increase,
+                &closed_accounts,
+            )
+        } else {
+            info!("No recently closed accounts initially found");
+            vec![]
+        };
+
+        // 2. If no high-confidence match, look for active accounts that might have closed
+        // Check if we have a High confidence match
+        let has_high_confidence = matches.iter().any(|m| matches!(m.confidence, super::reconciliation::ConfidenceLevel::High));
+        
+        if !has_high_confidence {
+             // Search for ACTIVE accounts with rent close to 'increase'
+             // Tolerance 5000 lamports (0.000005 SOL)
+             let tolerance = 5000;
+             let min = if increase > tolerance { increase - tolerance } else { 0 };
+             let max = increase + tolerance;
+             
+             let candidates = self.db.get_active_accounts_by_rent_range(min, max)?;
+             
+             if !candidates.is_empty() {
+                 info!("Found {} active candidates for possible attribution. Checking on-chain status...", candidates.len());
+                 let mut found_closed = false;
+                 
+                 for candidate in candidates {
+                     // Check if account still exists on-chain
+                     if let Ok(pubkey) = candidate.pubkey.parse::<Pubkey>() {
+                         // We don't have rate_limiter here, but candidate list should be small (filtered by amount)
+                         if let Ok(account_opt) = self.rpc_client.get_account(&pubkey).await {
+                             let is_closed = match account_opt {
+                                 None => true, // Account gone
+                                 Some(acc) => acc.lamports == 0, // Should be gone if 0
+                             };
+                             
+                             if is_closed {
+                                 info!("Account {} found closed on-chain! Marking as Closed.", candidate.pubkey);
+                                 // Mark as closed in DB
+                                 self.db.update_account_status(&candidate.pubkey, crate::storage::models::AccountStatus::Closed)?;
+                                 self.db.update_account_authority(&candidate.pubkey, None, "PassiveMonitoring")?;
+                                 
+                                 // Add to closed_accounts list for matching
+                                 closed_accounts.push(candidate);
+                                 found_closed = true;
+                             }
+                         }
+                     }
+                 }
+                 
+                 if found_closed {
+                     // Retry matching with updated list
+                     debug!("Retrying correlation with newly discovered closed accounts");
+                     matches = super::reconciliation::TreasuryReconciliation::match_amount_to_accounts(
+                        increase,
+                        &closed_accounts,
+                     );
+                 }
+             }
         }
-        
-        debug!("Found {} recently closed accounts", recently_closed.len());
-        
-        // Try to match the increase amount with account balances
-        let matches = super::reconciliation::TreasuryReconciliation::match_amount_to_accounts(
-            increase,
-            &recently_closed,
-        );
         
         Ok(matches)
     }

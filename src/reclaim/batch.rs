@@ -51,23 +51,41 @@ impl BatchProcessor {
             
             let results = self.engine.batch_reclaim(chunk).await;
             
-            for (pubkey, result) in match results {
-                Ok(res) => res,
-                Err(e) => {
-                    warn!("Batch reclaim failed for chunk: {}", e);
-                    continue;
-                }
-            } {
-                match result {
-                    Ok(res) => {
-                        summary.successful += 1;
-                        summary.total_reclaimed += res.amount_reclaimed;
-                        summary.results.push((pubkey, Ok(res)));
+            // Handle batch results with retry for failed chunks
+            match results {
+                Ok(res) => {
+                    // Process successful batch results
+                    for (pubkey, result) in res {
+                        match result {
+                            Ok(reclaim_res) => {
+                                summary.successful += 1;
+                                summary.total_reclaimed += reclaim_res.amount_reclaimed;
+                                summary.results.push((pubkey, Ok(reclaim_res)));
+                            }
+                            Err(e) => {
+                                summary.failed += 1;
+                                warn!("Failed to reclaim {}: {}", pubkey, e);
+                                summary.results.push((pubkey, Err(e)));
+                            }
+                        }
                     }
-                    Err(e) => {
-                        summary.failed += 1;
-                        warn!("Failed to reclaim {}: {}", pubkey, e);
-                        summary.results.push((pubkey, Err(e)));
+                }
+                Err(e) => {
+                    // If entire batch failed, retry individual accounts
+                    warn!("Batch reclaim failed for chunk: {}. Retrying individual accounts...", e);
+                    for (account, account_type) in chunk {
+                        match self.engine.reclaim_account(account, account_type).await {
+                            Ok(res) => {
+                                summary.successful += 1;
+                                summary.total_reclaimed += res.amount_reclaimed;
+                                summary.results.push((*account, Ok(res)));
+                            }
+                            Err(err) => {
+                                summary.failed += 1;
+                                warn!("Failed to reclaim {} on retry: {}", account, err);
+                                summary.results.push((*account, Err(err)));
+                            }
+                        }
                     }
                 }
             }

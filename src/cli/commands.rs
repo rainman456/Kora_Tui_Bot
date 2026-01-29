@@ -92,6 +92,10 @@ pub enum Commands {
         /// Output format: table or json
         #[arg(short, long, default_value = "table")]
         format: String,
+
+        /// Show only total reclaimed amount (faster)
+        #[arg(long)]
+        total: bool,
     },
     
     /// Initialize database and configuration

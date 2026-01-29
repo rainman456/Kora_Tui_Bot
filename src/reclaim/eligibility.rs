@@ -8,7 +8,7 @@ use crate::{
     config::Config,
     kora::types::AccountType,
 };
-use tracing::debug;
+use tracing::{debug, warn};
 
 pub struct EligibilityChecker {
     rpc_client: SolanaRpcClient,
@@ -22,16 +22,18 @@ impl EligibilityChecker {
     
     pub async fn is_eligible(&self, pubkey: &Pubkey, created_at: DateTime<Utc>) -> Result<bool> {
         // Check whitelist first (never reclaim)
-        if self.is_whitelisted(pubkey) {
-            debug!("Account {} is whitelisted", pubkey);
+       if self.is_blacklisted(pubkey) {
+        debug!("Account {} is blacklisted", pubkey);
+        return Ok(false);
+    }
+    
+    // Whitelist check - if whitelist exists and is not empty, ONLY reclaim whitelisted accounts
+    if !self.config.reclaim.whitelist.is_empty() {
+        if !self.is_whitelisted(pubkey) {
+            debug!("Account {} not on whitelist", pubkey);
             return Ok(false);
         }
-        
-        // Check blacklist (explicitly excluded)
-        if self.is_blacklisted(pubkey) {
-            debug!("Account {} is blacklisted", pubkey);
-            return Ok(false);
-        }
+    }
         
         let account = self.rpc_client.get_account(pubkey).await?;
         if account.is_none() {
@@ -54,8 +56,25 @@ impl EligibilityChecker {
             return Ok(false);
         }
         
-        // For SPL Token accounts, verify we have close authority
+        // For SPL Token accounts, verify token balance and close authority
         if matches!(account_type, AccountType::SplToken) {
+            // CRITICAL: Check if token account has zero token balance
+            // SPL Token amount is stored at bytes 64-71 as u64 little-endian
+            if account.data.len() >= 72 {
+                let amount_bytes: [u8; 8] = account.data[64..72]
+                    .try_into()
+                    .map_err(|_| crate::error::ReclaimError::NotEligible(
+                        "Failed to parse token amount".to_string()
+                    ))?;
+                let token_amount = u64::from_le_bytes(amount_bytes);
+                
+                if token_amount > 0 {
+                    debug!("Account {} still holds {} tokens, not eligible for reclaim", pubkey, token_amount);
+                    return Ok(false);
+                }
+            }
+            
+            // Verify operator has close authority
             if !self.has_close_authority(&account).await? {
                 debug!("Account {} - operator doesn't have close authority", pubkey);
                 return Ok(false);
@@ -70,8 +89,16 @@ impl EligibilityChecker {
             return Ok(false);
         }
         
-        // Check last activity time
-        let is_inactive = self.check_inactivity(pubkey).await.unwrap_or(false);
+        // Check last activity time with improved error handling
+        let is_inactive = match self.check_inactivity(pubkey).await {
+            Ok(inactive) => inactive,
+            Err(e) => {
+                tracing::warn!("Failed to check inactivity for {}: {}. Assuming active to be conservative.", pubkey, e);
+                // Conservative: assume active on error to avoid premature reclaim
+                false
+            }
+        };
+        
         if !is_inactive {
             debug!("Account {} has recent activity", pubkey);
             return Ok(false);
@@ -85,9 +112,12 @@ impl EligibilityChecker {
             return Ok(true);
         }
         
-        // Account has data but might still be reclaimable if it's only rent
+        // Account has data but might still be reclaimable if balance is minimal
+        // Allow reclaim if balance is <= 2x rent exemption (catches accounts with dust beyond rent)
+        // This threshold ensures we don't reclaim accounts with significant user deposits
         if account.lamports <= min_balance * 2 {
-            debug!("Account {} is eligible: has minimal balance and is inactive", pubkey);
+            debug!("Account {} is eligible: has minimal balance ({} lamports, {} SOL) and is inactive", 
+                   pubkey, account.lamports, account.lamports as f64 / 1_000_000_000.0);
             return Ok(true);
         }
         
@@ -108,7 +138,7 @@ impl EligibilityChecker {
 
 
     fn determine_account_type(&self, account: &solana_sdk::account::Account) -> AccountType {
-        if account.owner == spl_token::id() && account.data.len() == 165 {
+        if account.owner == spl_token::id() && account.data.len() >= 165 {
             AccountType::SplToken
         } else if account.owner == solana_sdk::system_program::id() {
             AccountType::System

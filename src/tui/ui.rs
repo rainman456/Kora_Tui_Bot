@@ -89,6 +89,9 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mu
                     _ => {}
                 }
             }
+        } else {
+            // Timeout expired (tick)
+            app.on_tick().await;
         }
         
         if app.should_quit {
@@ -181,6 +184,7 @@ fn render_dashboard(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
         .constraints([
             Constraint::Length(5),  // Stats row 1
             Constraint::Length(3),  // Stats row 2 (Telegram)
+            Constraint::Length(3),  // Alerts (NEW)
             Constraint::Min(0)      // Logs
         ])
         .split(area);
@@ -244,6 +248,19 @@ fn render_dashboard(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
         .alignment(Alignment::Center);
     f.render_widget(telegram_para, chunks[1]);
     
+    // Alerts
+    let alert_text = if app.alerts.is_empty() {
+        vec![Line::from(Span::styled("No active alerts", Style::default().fg(Color::Gray)))]
+    } else {
+        app.alerts.iter().map(|alert| {
+            Line::from(Span::styled(alert, Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)))
+        }).collect()
+    };
+    
+    let alerts_block = Block::default().borders(Borders::ALL).title("Alerts");
+    let alerts_para = Paragraph::new(alert_text).block(alerts_block);
+    f.render_widget(alerts_para, chunks[2]);
+    
     // Logs
     let logs: Vec<ListItem> = app.logs.iter().rev().take(20).map(|log| {
         ListItem::new(Line::from(Span::raw(log)))
@@ -251,7 +268,7 @@ fn render_dashboard(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     
     let logs_list = List::new(logs)
         .block(Block::default().borders(Borders::ALL).title("Activity Log"));
-    f.render_widget(logs_list, chunks[2]);
+    f.render_widget(logs_list, chunks[3]);
 }
 
 fn render_accounts(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {

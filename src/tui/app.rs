@@ -8,6 +8,7 @@ use crate::{
 };
 use solana_sdk::pubkey::Pubkey;
 use chrono::{DateTime, Utc};
+use std::time::{Instant, Duration};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Screen {
@@ -33,6 +34,8 @@ pub struct App {
     pub accounts: Vec<AccountDisplay>,
     pub operations: Vec<OperationDisplay>,
     pub logs: Vec<String>,
+    pub last_refresh: Instant,
+    pub alerts: Vec<String>,
     
     // Backend
     pub config: Config,
@@ -126,6 +129,8 @@ impl App {
             accounts: Vec::new(),
             operations: Vec::new(),
             logs: Vec::new(),
+            last_refresh: Instant::now(),
+            alerts: Vec::new(),
             telegram_enabled,
             telegram_configured,
             telegram_status,
@@ -137,6 +142,34 @@ impl App {
             reclaim_engine,
             db,
         })
+    }
+
+    pub async fn on_tick(&mut self) {
+        // Refresh every 1 second
+        if self.last_refresh.elapsed() >= Duration::from_secs(1) {
+            self.last_refresh = Instant::now();
+            let _ = self.refresh_stats().await;
+            self.check_alerts();
+        }
+    }
+
+    fn check_alerts(&mut self) {
+        self.alerts.clear();
+        
+        // Check for high value idle accounts
+        if let Some(threshold) = self.config.telegram.as_ref().map(|t| t.alert_threshold_sol) {
+            let threshold_lamports = (threshold * 1_000_000_000.0) as u64;
+            
+            let high_value_count = self.accounts.iter()
+                .filter(|a| a.eligible && a.balance >= threshold_lamports)
+                .count();
+                
+            if high_value_count > 0 {
+                self.alerts.push(format!("⚠️ {} accounts exceed {:.2} SOL threshold", high_value_count, threshold));
+            }
+        }
+        
+        // Add more alert logic here as needed
     }
     
     // Navigation
