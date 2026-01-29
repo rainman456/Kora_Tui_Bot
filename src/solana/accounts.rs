@@ -247,126 +247,187 @@ impl AccountDiscovery {
     }
     
     async fn parse_instruction_for_creation(
-        &self,
-        instruction: &solana_transaction_status::UiInstruction,
-        _account_keys: &[Pubkey],
-        signature: Signature,
-        slot: u64,
-        creation_time: DateTime<Utc>,
-    ) -> Result<Option<SponsoredAccountInfo>> {
-        use solana_transaction_status::{UiInstruction, UiParsedInstruction};
-        use serde_json::Value;
-        
-        match instruction {
-            UiInstruction::Parsed(parsed_instr_enum) => {
-                match parsed_instr_enum {
-                    UiParsedInstruction::Parsed(parsed_instr) => {
-                        let program = &parsed_instr.program;
-                        let parsed_value = &parsed_instr.parsed;
-                        
-                        // Check for System program CreateAccount
-                        if program == "system" {
-                            if let Some(parsed_info) = parsed_value.as_object() {
-                                let type_option: Option<&str> = parsed_info.get("type").and_then(|v| v.as_str());
-                                if let Some(info_type) = type_option {
-                                    if info_type == "createAccount" || info_type == "createAccountWithSeed" {
-                                        let info_option: Option<&serde_json::Map<String, Value>> = parsed_info.get("info").and_then(|v| v.as_object());
-                                        if let Some(info) = info_option {
-                                            let new_account_option: Option<&str> = info.get("newAccount").and_then(|v| v.as_str());
-                                            if let Some(new_account_str) = new_account_option {
-                                                let new_account = Pubkey::from_str(new_account_str)?;
-                                                let lamports = info.get("lamports").and_then(|v| v.as_u64()).unwrap_or(0);
-                                                let space = info.get("space").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                                                
-                                                return Ok(Some(SponsoredAccountInfo {
-                                                    pubkey: new_account,
-                                                    creation_signature: signature,
-                                                    creation_slot: slot,
-                                                    creation_time,
-                                                    initial_balance: lamports,
-                                                    data_size: space,
-                                                    account_type: AccountType::System,
-                                                }));
-                                            }
+    &self,
+    instruction: &solana_transaction_status::UiInstruction,
+    _account_keys: &[Pubkey],
+    signature: Signature,
+    slot: u64,
+    creation_time: DateTime<Utc>,
+) -> Result<Option<SponsoredAccountInfo>> {
+    use solana_transaction_status::{UiInstruction, UiParsedInstruction};
+    use serde_json::Value;
+    
+    match instruction {
+        UiInstruction::Parsed(parsed_instr_enum) => {
+            match parsed_instr_enum {
+                UiParsedInstruction::Parsed(parsed_instr) => {
+                    let program = &parsed_instr.program;
+                    let parsed_value = &parsed_instr.parsed;
+                    
+                    // ✅ PRIORITY 1: Check for spl-associated-token-account (this is what Kora uses!)
+                    if program == "spl-associated-token-account" {
+                        if let Some(parsed_info) = parsed_value.as_object() {
+                            let type_option: Option<&str> = parsed_info.get("type").and_then(|v| v.as_str());
+                            if let Some(info_type) = type_option {
+                                // Both "create" and "createIdempotent" create ATAs
+                                if info_type == "create" || info_type == "createIdempotent" {
+                                    let info_option: Option<&serde_json::Map<String, Value>> = 
+                                        parsed_info.get("info").and_then(|v| v.as_object());
+                                    if let Some(info) = info_option {
+                                        // The ATA address is in the "account" field
+                                        let account_option: Option<&str> = 
+                                            info.get("account").and_then(|v| v.as_str());
+                                        if let Some(account_str) = account_option {
+                                            let ata_address = Pubkey::from_str(account_str)?;
+                                            
+                                            debug!("✓ Found ATA creation: {}", ata_address);
+                                            
+                                            // ATAs are 165 bytes and typically have ~0.00203928 SOL rent
+                                            return Ok(Some(SponsoredAccountInfo {
+                                                pubkey: ata_address,
+                                                creation_signature: signature,
+                                                creation_slot: slot,
+                                                creation_time,
+                                                initial_balance: 2039280, // Typical ATA rent (~0.00203928 SOL)
+                                                data_size: 165,
+                                                account_type: AccountType::SplToken,
+                                            }));
                                         }
                                     }
                                 }
                             }
                         }
                         
-                        // Check for SPL Token InitializeAccount
-                        if program == "spl-token" {
-                            if let Some(parsed_info) = parsed_value.as_object() {
-                                let type_option: Option<&str> = parsed_info.get("type").and_then(|v| v.as_str());
-                                if let Some(info_type) = type_option {
-                                    if info_type == "initializeAccount" {
-                                        let info_option: Option<&serde_json::Map<String, Value>> = parsed_info.get("info").and_then(|v| v.as_object());
-                                        if let Some(info) = info_option {
-                                            let account_option: Option<&str> = info.get("account").and_then(|v| v.as_str());
-                                            if let Some(account_str) = account_option {
-                                                let account = Pubkey::from_str(account_str)?;
-                                                
-                                                return Ok(Some(SponsoredAccountInfo {
-                                                    pubkey: account,
-                                                    creation_signature: signature,
-                                                    creation_slot: slot,
-                                                    creation_time,
-                                                    initial_balance: 0,
-                                                    data_size: 165,
-                                                    account_type: AccountType::SplToken,
-                                                }));
-                                            }
+                        debug!("Found spl-associated-token-account instruction but couldn't parse account address");
+                        return Ok(None);
+                    }
+                    
+                    // Check for System program CreateAccount
+                    if program == "system" {
+                        if let Some(parsed_info) = parsed_value.as_object() {
+                            let type_option: Option<&str> = parsed_info.get("type").and_then(|v| v.as_str());
+                            if let Some(info_type) = type_option {
+                                if info_type == "createAccount" || info_type == "createAccountWithSeed" {
+                                    let info_option: Option<&serde_json::Map<String, Value>> = 
+                                        parsed_info.get("info").and_then(|v| v.as_object());
+                                    if let Some(info) = info_option {
+                                        let new_account_option: Option<&str> = 
+                                            info.get("newAccount").and_then(|v| v.as_str());
+                                        if let Some(new_account_str) = new_account_option {
+                                            let new_account = Pubkey::from_str(new_account_str)?;
+                                            let lamports = info.get("lamports").and_then(|v| v.as_u64()).unwrap_or(0);
+                                            let space = info.get("space").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                                            
+                                            debug!("✓ Found system account creation: {}", new_account);
+                                            
+                                            return Ok(Some(SponsoredAccountInfo {
+                                                pubkey: new_account,
+                                                creation_signature: signature,
+                                                creation_slot: slot,
+                                                creation_time,
+                                                initial_balance: lamports,
+                                                data_size: space,
+                                                account_type: AccountType::System,
+                                            }));
                                         }
                                     }
                                 }
                             }
                         }
-                        
-                       // After the spl-token check, before the final else
-
-// ✅ USE: Capture other program account creations with AccountType::Other
-if program != "system" && program != "spl-token" {
-    // Try to detect account creation from other programs
-    if let Some(parsed_info) = parsed_value.as_object() {
-        if let Some(info) = parsed_info.get("info").and_then(|v| v.as_object()) {
-            // Look for common account creation patterns
-            let account_key = info.get("account")
-                .or_else(|| info.get("newAccount"))
-                .or_else(|| info.get("address"))
-                .and_then(|v| v.as_str());
-            
-            if let Some(account_str) = account_key {
-                if let Ok(account_pubkey) = Pubkey::from_str(account_str) {
-                    // Try to parse the program ID
-                    if let Ok(program_id) = Pubkey::from_str(program) {
-                        debug!("Detected account creation from program: {}", program);
-                        
-                        return Ok(Some(SponsoredAccountInfo {
-                            pubkey: account_pubkey,
-                            creation_signature: signature,
-                            creation_slot: slot,
-                            creation_time,
-                            initial_balance: info.get("lamports").and_then(|v| v.as_u64()).unwrap_or(0),
-                            data_size: info.get("space").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
-                            account_type: AccountType::Other(program_id), // ✅ USE: Other variant
-                        }));
+                    }
+                    
+                    // Check for SPL Token InitializeAccount (less common, but still valid)
+                    if program == "spl-token" {
+                        if let Some(parsed_info) = parsed_value.as_object() {
+                            let type_option: Option<&str> = parsed_info.get("type").and_then(|v| v.as_str());
+                            if let Some(info_type) = type_option {
+                                if info_type == "initializeAccount" {
+                                    let info_option: Option<&serde_json::Map<String, Value>> = 
+                                        parsed_info.get("info").and_then(|v| v.as_object());
+                                    if let Some(info) = info_option {
+                                        let account_option: Option<&str> = 
+                                            info.get("account").and_then(|v| v.as_str());
+                                        if let Some(account_str) = account_option {
+                                            let account = Pubkey::from_str(account_str)?;
+                                            
+                                            debug!("✓ Found token account initialization: {}", account);
+                                            
+                                            return Ok(Some(SponsoredAccountInfo {
+                                                pubkey: account,
+                                                creation_signature: signature,
+                                                creation_slot: slot,
+                                                creation_time,
+                                                initial_balance: 0,
+                                                data_size: 165,
+                                                account_type: AccountType::SplToken,
+                                            }));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    // ✅ IMPROVED: More selective "Other" program detection
+                    // Only capture if it's clearly an account CREATION instruction
+                    if program != "system" 
+                        && program != "spl-token" 
+                        && program != "spl-associated-token-account" 
+                    {
+                        if let Some(parsed_info) = parsed_value.as_object() {
+                            let type_option: Option<&str> = parsed_info.get("type").and_then(|v| v.as_str());
+                            
+                            // Only process if the instruction type indicates creation
+                            if let Some(info_type) = type_option {
+                                let is_creation = info_type.contains("create") 
+                                    || info_type.contains("initialize")
+                                    || info_type.contains("init");
+                                
+                                if is_creation {
+                                    if let Some(info) = parsed_info.get("info").and_then(|v| v.as_object()) {
+                                        // Look for common account creation patterns
+                                        let account_key = info.get("account")
+                                            .or_else(|| info.get("newAccount"))
+                                            .or_else(|| info.get("address"))
+                                            .and_then(|v| v.as_str());
+                                        
+                                        if let Some(account_str) = account_key {
+                                            if let Ok(account_pubkey) = Pubkey::from_str(account_str) {
+                                                // Try to parse the program ID
+                                                if let Ok(program_id) = Pubkey::from_str(program) {
+                                                    debug!("✓ Detected account creation from program: {} (type: {})", program, info_type);
+                                                    
+                                                    return Ok(Some(SponsoredAccountInfo {
+                                                        pubkey: account_pubkey,
+                                                        creation_signature: signature,
+                                                        creation_slot: slot,
+                                                        creation_time,
+                                                        initial_balance: info.get("lamports").and_then(|v| v.as_u64()).unwrap_or(0),
+                                                        data_size: info.get("space").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
+                                                        account_type: AccountType::Other(program_id),
+                                                    }));
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            // Only log if we're actually looking at parsed info
+                            if parsed_info.get("info").is_some() {
+                                debug!("Found instruction from program: {} (no account creation detected)", program);
+                            }
+                        }
                     }
                 }
+                UiParsedInstruction::PartiallyDecoded(_) => {}
             }
         }
-        
-        debug!("Found instruction from program: {} (no account creation detected)", program);
+        UiInstruction::Compiled(_) => {}
     }
+    
+    Ok(None)
 }
-                    }
-                    UiParsedInstruction::PartiallyDecoded(_) => {}
-                }
-            }
-            UiInstruction::Compiled(_) => {}
-        }
-        
-        Ok(None)
-    }
     
     /// Get the last transaction time for an account (for inactivity detection)
     pub async fn get_last_transaction_time(&self, address: &Pubkey) -> Result<Option<DateTime<Utc>>> {
