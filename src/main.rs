@@ -804,6 +804,50 @@ async fn run_auto_service(config: &Config, interval: u64, dry_run: bool) -> erro
                 treasury_keypair,
                 actual_dry_run,
             );
+
+            // In run_auto_service(), add after the main reclaim logic:
+
+// Check for passive reclaims
+let treasury_wallet = config.treasury_wallet()?;
+let treasury_monitor = treasury::TreasuryMonitor::new(
+    treasury_wallet,
+    rpc_client.clone(),
+    db.clone(),
+);
+
+match treasury_monitor.check_for_passive_reclaims().await {
+    Ok(passive_reclaims) => {
+        if !passive_reclaims.is_empty() {
+            info!("Detected {} passive reclaim(s)", passive_reclaims.len());
+            
+            for reclaim in &passive_reclaims {
+                let account_strs: Vec<String> = reclaim.attributed_accounts
+                    .iter()
+                    .map(|pk| pk.to_string())
+                    .collect();
+                
+                let confidence_str = format!("{:?}", reclaim.confidence);
+                let _ = db.save_passive_reclaim(
+                    reclaim.amount,
+                    &account_strs,
+                    &confidence_str,
+                );
+                
+                // Notify
+                if let Some(ref n) = notifier {
+                    n.notify_passive_reclaim(
+                        reclaim.amount,
+                        &account_strs,
+                        &confidence_str,
+                    ).await;
+                }
+            }
+        }
+    }
+    Err(e) => {
+        warn!("Failed to check for passive reclaims: {}", e);
+    }
+}
             
             let batch_processor = reclaim::BatchProcessor::new(
                 engine,
@@ -889,36 +933,123 @@ async fn show_stats(config: &Config, format: &str) -> error::Result<()> {
     let stats = db.get_stats()?;
     
     if format == "json" {
-        // ✅ USE: get_checkpoint_info for JSON output
+        // JSON output with passive reclaims
         let checkpoints = db.get_checkpoint_info().unwrap_or_default();
         let checkpoint_map: std::collections::HashMap<String, String> = checkpoints
             .into_iter()
             .map(|(key, value, _)| (key, value))
             .collect();
         
+        let passive_total = db.get_total_passive_reclaimed().unwrap_or(0);
+        
+        let active_accounts = db.get_accounts_by_strategy("ActiveReclaim").unwrap_or_default();
+        let passive_accounts = db.get_accounts_by_strategy("PassiveMonitoring").unwrap_or_default();
+        let unrecoverable = db.get_accounts_by_strategy("Unrecoverable").unwrap_or_default();
+        
+        let active_rent: u64 = active_accounts.iter().map(|a| a.rent_lamports).sum();
+        let passive_rent: u64 = passive_accounts.iter().map(|a| a.rent_lamports).sum();
+        let unrecoverable_rent: u64 = unrecoverable.iter().map(|a| a.rent_lamports).sum();
+        
         let json_output = serde_json::json!({
             "stats": stats,
             "checkpoints": checkpoint_map,
+            "passive_reclaims": {
+                "total_amount": passive_total,
+                "total_amount_sol": crate::solana::rent::RentCalculator::lamports_to_sol(passive_total),
+            },
+            "reclaim_strategies": {
+                "active_reclaim": {
+                    "accounts": active_accounts.len(),
+                    "total_rent": active_rent,
+                    "total_rent_sol": crate::solana::rent::RentCalculator::lamports_to_sol(active_rent),
+                },
+                "passive_monitoring": {
+                    "accounts": passive_accounts.len(),
+                    "total_rent": passive_rent,
+                    "total_rent_sol": crate::solana::rent::RentCalculator::lamports_to_sol(passive_rent),
+                },
+                "unrecoverable": {
+                    "accounts": unrecoverable.len(),
+                    "total_rent": unrecoverable_rent,
+                    "total_rent_sol": crate::solana::rent::RentCalculator::lamports_to_sol(unrecoverable_rent),
+                },
+            }
         });
         
         println!("{}", serde_json::to_string_pretty(&json_output)?);
         return Ok(());
     }
     
-    // Table format
+    // Enhanced table format
     println!("{}", "=== Kora Rent Reclaim Statistics ===".cyan().bold());
-    println!("\nAccounts:");
+    
+    println!("\n{}", "Accounts:".cyan());
     println!("  Total:      {}", stats.total_accounts);
     println!("  Active:     {}", stats.active_accounts.to_string().green());
     println!("  Closed:     {}", stats.closed_accounts.to_string().yellow());
     println!("  Reclaimed:  {}", stats.reclaimed_accounts.to_string().cyan());
     
-    println!("\nReclaim Operations:");
-    println!("  Total:      {}", stats.total_operations);
-    println!("  Total SOL:  {}", utils::format_sol(stats.total_reclaimed));
-    println!("  Average:    {}", utils::format_sol(stats.avg_reclaim_amount));
+    // NEW: Reclaim strategy breakdown
+    println!("\n{}", "Reclaim Strategy Analysis:".cyan().bold());
     
-    // ✅ USE: get_checkpoint_info to show scanning progress
+    let active_accounts = db.get_accounts_by_strategy("ActiveReclaim").unwrap_or_default();
+    let passive_accounts = db.get_accounts_by_strategy("PassiveMonitoring").unwrap_or_default();
+    let unrecoverable = db.get_accounts_by_strategy("Unrecoverable").unwrap_or_default();
+    
+    let active_rent: u64 = active_accounts.iter()
+        .filter(|a| a.status == storage::models::AccountStatus::Active)
+        .map(|a| a.rent_lamports)
+        .sum();
+    let passive_rent: u64 = passive_accounts.iter()
+        .filter(|a| a.status == storage::models::AccountStatus::Active)
+        .map(|a| a.rent_lamports)
+        .sum();
+    let unrecoverable_rent: u64 = unrecoverable.iter()
+        .filter(|a| a.status == storage::models::AccountStatus::Active)
+        .map(|a| a.rent_lamports)
+        .sum();
+    
+    println!("  {} Active Reclaim Possible:", "✓".green());
+    println!("    {} accounts | {} locked", 
+        active_accounts.len().to_string().green(),
+        utils::format_sol(active_rent).green()
+    );
+    println!("    → Operator has close authority, can reclaim anytime");
+    
+    println!("\n  {} Passive Monitoring:", "⏱".yellow());
+    println!("    {} accounts | {} locked", 
+        passive_accounts.len().to_string().yellow(),
+        utils::format_sol(passive_rent).yellow()
+    );
+    println!("    → User controls account, monitor for when they close it");
+    
+    println!("\n  {} Unrecoverable:", "✗".red());
+    println!("    {} accounts | {} locked", 
+        unrecoverable.len().to_string().red(),
+        utils::format_sol(unrecoverable_rent).red()
+    );
+    println!("    → System accounts or permanently locked");
+    
+    // Reclaim operations
+    println!("\n{}", "Reclaim Operations:".cyan());
+    println!("  Active Reclaims:   {}", stats.total_operations);
+    println!("  Total SOL:         {}", utils::format_sol(stats.total_reclaimed));
+    println!("  Average:           {}", utils::format_sol(stats.avg_reclaim_amount));
+    
+    // NEW: Passive reclaims
+    let passive_total = db.get_total_passive_reclaimed().unwrap_or(0);
+    if passive_total > 0 {
+        println!("\n  Passive Reclaims:  {}", utils::format_sol(passive_total).green());
+        println!("  (Rent that returned to treasury when users closed accounts)");
+    }
+    
+    // Total recovery
+    let total_recovered = stats.total_reclaimed + passive_total;
+    if total_recovered > 0 {
+        println!("\n  {} Total Recovered:  {}", "💰".green(), utils::format_sol(total_recovered).green().bold());
+    }
+    
+    // Scanning Progress
     println!("\n{}", "Scanning Progress:".cyan());
     match db.get_checkpoint_info() {
         Ok(checkpoints) => {
@@ -926,13 +1057,21 @@ async fn show_stats(config: &Config, format: &str) -> error::Result<()> {
                 println!("  No checkpoints found (full scan on next run)");
             } else {
                 for (key, value, updated_at) in checkpoints {
+                    if key == "treasury_balance" {
+                        let balance = value.parse::<u64>().unwrap_or(0);
+                        println!("  Treasury Balance: {} (last checked: {})",
+                            utils::format_sol(balance),
+                            updated_at
+                        );
+                        continue;
+                    }
+                    
                     let display_value = if key == "last_signature" {
                         utils::format_pubkey(&value)
                     } else {
                         value
                     };
                     
-                    // Parse and format timestamp
                     let time_display = if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&updated_at) {
                         utils::format_timestamp(&dt.with_timezone(&chrono::Utc))
                     } else {
@@ -953,15 +1092,45 @@ async fn show_stats(config: &Config, format: &str) -> error::Result<()> {
         }
     }
     
-    // ✅ USE: get_last_processed_slot for additional context
-    if let Ok(Some(last_slot)) = db.get_last_processed_slot() {
-        println!("  Last Processed Slot: {}", last_slot.to_string().cyan());
+    // Show passive reclaim history if available
+    let passive_history = db.get_passive_reclaim_history(Some(5)).unwrap_or_default();
+    if !passive_history.is_empty() {
+        println!("\n{}", "Recent Passive Reclaims:".yellow());
+        utils::print_table_border(100);
+        utils::print_table_row(
+            &["Timestamp", "Amount", "Confidence", "Accounts"],
+            &[22, 18, 15, 45],
+        );
+        utils::print_table_border(100);
+        
+        for record in passive_history {
+            let accounts_str = if record.attributed_accounts.len() <= 2 {
+                record.attributed_accounts
+                    .iter()
+                    .map(|a| utils::format_pubkey(a))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            } else {
+                format!("{} accounts", record.attributed_accounts.len())
+            };
+            
+            utils::print_table_row(
+                &[
+                    &utils::format_timestamp(&record.timestamp),
+                    &utils::format_sol(record.amount),
+                    &record.confidence,
+                    &accounts_str,
+                ],
+                &[22, 18, 15, 45],
+            );
+        }
+        utils::print_table_border(100);
     }
     
-    // Show recent history
+    // Show recent active reclaim history
     let history = db.get_reclaim_history(Some(10))?;
     if !history.is_empty() {
-        println!("\n{}", "Recent Reclaim Operations:".yellow());
+        println!("\n{}", "Recent Active Reclaim Operations:".yellow());
         utils::print_table_border(100);
         utils::print_table_row(
             &["Timestamp", "Account", "Amount", "Signature"],
@@ -970,21 +1139,10 @@ async fn show_stats(config: &Config, format: &str) -> error::Result<()> {
         utils::print_table_border(100);
         
         for op in history {
-            // ✅ USE: get_account_creation_details to enrich display
-            let account_details = if let Ok(Some((creation_sig, creation_slot))) = 
-                db.get_account_creation_details(&op.account_pubkey) 
-            {
-                format!(" (created at slot {}, sig: {})", 
-                    creation_slot, 
-                    utils::format_pubkey(&creation_sig))
-            } else {
-                String::new()
-            };
-            
             utils::print_table_row(
                 &[
                     &utils::format_timestamp(&op.timestamp),
-                    &format!("{}{}", utils::format_pubkey(&op.account_pubkey), account_details),
+                    &utils::format_pubkey(&op.account_pubkey),
                     &utils::format_sol(op.reclaimed_amount),
                     &utils::format_pubkey(&op.tx_signature),
                 ],
@@ -992,6 +1150,21 @@ async fn show_stats(config: &Config, format: &str) -> error::Result<()> {
             );
         }
         utils::print_table_border(100);
+    }
+    
+    // Recommendations
+    println!("\n{}", "💡 Recommendations:".yellow().bold());
+    if passive_accounts.len() > 0 {
+        println!("  • {} accounts with user authority may return rent when closed", passive_accounts.len());
+        println!("    Run {} to check for passive reclaims", "kora-reclaim passive-check".cyan());
+    }
+    if active_accounts.len() > 0 {
+        println!("  • {} accounts are eligible for active reclaim", active_accounts.len());
+        println!("    Run {} to reclaim now", "kora-reclaim auto --dry-run".cyan());
+    }
+    if unrecoverable.len() > 0 {
+        println!("  • {} accounts have permanently locked rent", unrecoverable.len());
+        println!("    Consider negotiating close authority with integrated apps");
     }
     
     Ok(())

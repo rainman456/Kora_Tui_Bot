@@ -41,6 +41,44 @@ impl AutoNotifier {
         }
     }
 
+
+    // Add to impl AutoNotifier in src/telegram.rs
+
+pub async fn notify_passive_reclaim(
+    &self,
+    amount: u64,
+    accounts: &[String],
+    confidence: &str,
+) {
+    if !self.enabled {
+        return;
+    }
+    
+    let sol_amount = crate::solana::rent::RentCalculator::lamports_to_sol(amount);
+    
+    let accounts_str = if accounts.len() <= 3 {
+        accounts.iter()
+            .map(|a| format!("• `{}`", a))
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        format!("{} accounts", accounts.len())
+    };
+    
+    let message = format!(
+        "🔄 *Passive Reclaim Detected*\n\n\
+         Amount: *{:.9} SOL*\n\
+         Confidence: {}\n\
+         Likely from:\n{}\n\n\
+         This rent returned to treasury when the user closed their account.",
+        sol_amount,
+        confidence,
+        accounts_str
+    );
+    
+    self.send_message(&message).await;
+}
+
     /// Send scan complete notification
     pub async fn notify_scan_complete(&self, total: usize, eligible: usize) {
         if !self.enabled {
