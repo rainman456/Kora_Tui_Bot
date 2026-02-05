@@ -10,7 +10,7 @@ use crate::{
     config::Config,
     kora::types::AccountType,
 };
-use tracing::{debug, warn};
+use tracing::debug;
 
 pub struct EligibilityChecker {
     rpc_client: SolanaRpcClient,
@@ -129,8 +129,13 @@ if account.is_none() {
     }
 
     fn determine_account_type(&self, account: &solana_sdk::account::Account) -> AccountType {
-        if account.owner == spl_token::id() && account.data.len() >= 165 {
-            AccountType::SplToken
+        if account.owner == spl_token::id() {
+            // SPL Token program owns both Mint accounts (82 bytes) and Token accounts (165 bytes)
+            match account.data.len() {
+                165 => AccountType::SplToken,
+                82 => AccountType::SplMint,
+                _ => AccountType::Other(account.owner),
+            }
         } else if account.owner == solana_sdk::system_program::id() {
             AccountType::System
         } else {
@@ -142,6 +147,7 @@ if account.is_none() {
         match account_type {
             AccountType::System => false,
             AccountType::SplToken => true,
+            AccountType::SplMint => false,  // Mints cannot be reclaimed
             AccountType::Other(_) => false,
         }
     }
@@ -184,6 +190,14 @@ if account.is_none() {
                         close_authority
                     ))
                 }
+            }
+            
+            AccountType::SplMint => {
+                // Mint accounts cannot be reclaimed - they are permanent infrastructure
+                Ok((
+                    crate::storage::models::ReclaimStrategy::Unrecoverable,
+                    None
+                ))
             }
             
             AccountType::Other(_) => {
@@ -302,6 +316,16 @@ if account.is_none() {
         
         // Check account type
         let account_type = self.determine_account_type(&account);
+        
+        // Special handling for mint accounts
+        if matches!(account_type, AccountType::SplMint) {
+            return Ok(
+                "This is a SPL Token Mint account. Mints cannot be reclaimed - \
+                they are permanent infrastructure for the token. \
+                Only empty token accounts (ATAs) can be reclaimed.".to_string()
+            );
+        }
+        
         if !self.is_reclaimable_type(&account_type) {
             return Ok(format!(
                 "Account type {:?} cannot be reclaimed (operator doesn't control it)",

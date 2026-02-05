@@ -103,82 +103,67 @@ pub async fn reclaim_account(
             ));
         }
         
-        // Check token amount (offset 64, 8 bytes as u64 little-endian)
-        let amount_bytes: [u8; 8] = account_data.data[64..72]
-            .try_into()
-            .map_err(|_| crate::error::ReclaimError::NotEligible(
-                "Failed to parse token amount from account data".to_string()
-            ))?;
-        let token_amount = u64::from_le_bytes(amount_bytes);
+        // Use proper deserialization instead of manual byte parsing
+        use solana_sdk::program_pack::Pack;
+        use spl_token::state::Account as TokenAccount;
+        use solana_sdk::program_option::COption;
         
-        if token_amount > 0 {
+        let token_account = TokenAccount::unpack(&account_data.data)
+            .map_err(|e| crate::error::ReclaimError::NotEligible(
+                format!("Failed to deserialize SPL Token account: {}", e)
+            ))?;
+        
+        // Check token amount
+        if token_account.amount > 0 {
             return Err(crate::error::ReclaimError::NotEligible(
                 format!(
                     "Cannot close token account: still has {} tokens. Account must be emptied first.",
-                    token_amount
+                    token_account.amount
                 )
             ));
         }
         
-        // Check account state (offset 108, 1 byte)
-        // AccountState: Uninitialized = 0, Initialized = 1, Frozen = 2
-        let state = account_data.data[108];
-        if state == AccountState::Frozen as u8 {
+        // Check account state
+        if token_account.state == AccountState::Frozen {
             return Err(crate::error::ReclaimError::NotEligible(
                 "Cannot close frozen token account".to_string()
             ));
         }
         
         // Verify close authority
-        // CloseAuthority is at offset 129 (4 bytes for option discriminant + 32 bytes for pubkey)
-        // First byte indicates if close authority is set (0 = None, 1 = Some)
-        let has_close_authority = account_data.data[129] == 1;
-        
-        if has_close_authority {
-            let close_authority_bytes: [u8; 32] = account_data.data[130..162]
-                .try_into()
-                .map_err(|_| crate::error::ReclaimError::NotEligible(
-                    "Failed to parse close authority from account data".to_string()
-                ))?;
-            let close_authority = Pubkey::new_from_array(close_authority_bytes);
-            
-            if close_authority != self.signer.pubkey() {
-                return Err(crate::error::ReclaimError::NotEligible(
-                    format!(
-                        "Cannot close token account: operator ({}) is not the close authority ({})",
-                        self.signer.pubkey(),
-                        close_authority
-                    )
-                ));
+        let operator_pubkey = self.signer.pubkey();
+        let has_close_auth = match token_account.close_authority {
+            COption::None => {
+                // No close authority set - check if operator is the owner
+                if token_account.owner != operator_pubkey {
+                    return Err(crate::error::ReclaimError::NotEligible(
+                        format!(
+                            "Cannot close token account: no close authority set and operator ({}) is not the owner ({})",
+                            operator_pubkey,
+                            token_account.owner
+                        )
+                    ));
+                }
+                true
             }
-            
+            COption::Some(close_auth) => {
+                if close_auth != operator_pubkey {
+                    return Err(crate::error::ReclaimError::NotEligible(
+                        format!(
+                            "Cannot close token account: operator ({}) is not the close authority ({})",
+                            operator_pubkey,
+                            close_auth
+                        )
+                    ));
+                }
+                true
+            }
+        };
+        
+        if has_close_auth {
             info!(
                 "Verified: Operator {} has close authority for token account {}",
-                self.signer.pubkey(),
-                account_pubkey
-            );
-        } else {
-            // Check if operator is the account owner as fallback
-            let owner_bytes: [u8; 32] = account_data.data[32..64]
-                .try_into()
-                .map_err(|_| crate::error::ReclaimError::NotEligible(
-                    "Failed to parse owner from account data".to_string()
-                ))?;
-            let owner = Pubkey::new_from_array(owner_bytes);
-            
-            if owner != self.signer.pubkey() {
-                return Err(crate::error::ReclaimError::NotEligible(
-                    format!(
-                        "Cannot close token account: no close authority set and operator ({}) is not the owner ({})",
-                        self.signer.pubkey(),
-                        owner
-                    )
-                ));
-            }
-            
-            info!(
-                "Verified: Operator {} is the owner of token account {}",
-                self.signer.pubkey(),
+                operator_pubkey,
                 account_pubkey
             );
         }
@@ -199,11 +184,10 @@ pub async fn reclaim_account(
     let instruction = self.build_close_instruction(account_pubkey, account_type, current_balance)?;
     
     if self.dry_run {
-        info!("DRY RUN: Would reclaim {} lamports from {}", current_balance, account_pubkey);
+        info!("DRY RUN: Would reclaim {} lamports from {}", balance, account_pubkey);
         return Ok(ReclaimResult {
             signature: None,
-            //amount_reclaimed: balance,
-            amount_reclaimed: current_balance,
+            amount_reclaimed: balance,
             account: *account_pubkey,
             dry_run: true,
         });
@@ -231,8 +215,7 @@ pub async fn reclaim_account(
     
     Ok(ReclaimResult {
         signature: Some(signature),
-        //amount_reclaimed: balance,
-         amount_reclaimed: current_balance, 
+        amount_reclaimed: balance,
         account: *account_pubkey,
         dry_run: false,
     })
@@ -277,6 +260,16 @@ fn build_close_instruction(
             )?;
             
             Ok(close_instruction)
+        }
+        
+        AccountType::SplMint => {
+            // Mint accounts cannot and should not be closed
+            // They are permanent infrastructure for the token
+            warn!("Cannot close SPL Token Mint account: mints are permanent infrastructure");
+            Err(crate::error::ReclaimError::NotEligible(
+                "Cannot close SPL Token Mint accounts - they are permanent infrastructure. \
+                 Mints should be filtered during discovery.".to_string()
+            ))
         }
         
         AccountType::Other(program_id) => {
@@ -331,4 +324,3 @@ impl Clone for ReclaimEngine {
         }
     }
 }
-
