@@ -35,7 +35,7 @@ async fn main() {
     let result = match cli.command {
        Commands::Tui => {
      info!("Launching Nexus TUI...");
-    tui::run_tui(config).await.map_err(|e| e.into())
+    run_tui(config).await.map_err(|e| e.into())
 }
 
         Commands::Scan {
@@ -230,7 +230,6 @@ async fn scan_accounts(
     let mut eligible_accounts = Vec::new();
 
     for account_info in &sponsored_accounts {
-        // ✅ USE: is_account_active to check if account still exists before processing
         let is_active = match rpc_client.is_account_active(&account_info.pubkey).await {
             Ok(active) => active,
             Err(e) => {
