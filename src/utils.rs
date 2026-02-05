@@ -1,4 +1,6 @@
 use colored::Colorize;
+use std::sync::Arc;
+
 
 /// Format lamports as SOL string with color
 pub fn format_sol(lamports: u64) -> String {
@@ -25,21 +27,21 @@ pub fn format_timestamp(timestamp: &chrono::DateTime<chrono::Utc>) -> String {
 #[derive(Clone)]
 pub struct RateLimiter {
     delay: std::time::Duration,
-    last_call: tokio::sync::Mutex<Option<std::time::Instant>>, // ✅ FIX: Use tokio::sync::Mutex
+    last_call: Arc<tokio::sync::Mutex<Option<std::time::Instant>>>,
 }
 
 impl RateLimiter {
     pub fn new(delay_ms: u64) -> Self {
         Self {
             delay: std::time::Duration::from_millis(delay_ms),
-            last_call: tokio::sync::Mutex::new(None), // ✅ FIX: Use tokio::sync::Mutex
+            last_call: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
     
     pub async fn wait(&self) {
-        // ✅ FIX: Properly scope the lock to avoid holding it across await
+        // Properly scope the lock to avoid holding it across await
         let should_sleep = {
-            let mut last = self.last_call.lock().await; // Use .await instead of .unwrap()
+            let mut last = self.last_call.lock().await;
             
             if let Some(last_time) = *last {
                 let elapsed = last_time.elapsed();
@@ -54,7 +56,7 @@ impl RateLimiter {
                 *last = Some(std::time::Instant::now());
                 None
             }
-        }; // ✅ Lock is dropped here before we sleep
+        }; // Lock is dropped here before we sleep
         
         // Now sleep without holding the lock
         if let Some(remaining) = should_sleep {
