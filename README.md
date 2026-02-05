@@ -1,28 +1,3 @@
-**User:**
-
-Do not use any cache study the codebase line by line and in detail and create a well detailed and comprehensive README with mermaid diagrams where necessary explaining how the tool works and the README must satisfy the requirements of this task:
- Overview Kora makes it easy for apps to sponsor transactions and account creation on Solana. This improves user experience, but it comes with a hidden cost: rent-locked SOL. When a Kora node sponsors account creation, SOL is locked as rent. Over time, many of these accounts become inactive, closed, or no longer needed. In most cases, operators do not actively track or reclaim this rent, leading to silent capital loss. This bounty focuses on solving that operational gap. Your task is to design and build an automated rent-reclaim bot that monitors sponsored accounts created through a Kora node and safely reclaims rent SOL when those accounts are closed or eligible for cleanup. This should help Kora operators recover funds without manual inspection or guesswork. The goal is not just automation, but clarity. The bot should help operators understand where their rent went, what was reclaimed, and why. Requirements Your submission must include a working bot that: Monitors accounts sponsored by a Kora node Detects when an account is closed or no longer required Reclaims the locked rent SOL back to the operator treasury Additional requirements: Code must be fully open source A detailed README explanation of how Kora works and where rent locking happens A working prototype on devnet or mainnet A deep-dive content piece explaining your approach (video or written) Must be built solo If selected as a winner, you must do a live walkthrough presentation The winning code will be pushed to the SuperteamNG repository What You Can Build You are free to choose the interface and approach, as long as the core logic works. Possible directions include: Automation Bots A Telegram bot that alerts operators and triggers reclaim actions A cron-based backend service that runs periodic checks A CLI tool that operators can run on demand Monitoring and Reporting A dashboard showing total rent locked vs reclaimed Logs that explain why an account was reclaimed Alerts when large amounts of rent are idle Safety and Controls Whitelists or filters to avoid claiming active accounts Clear transaction history and audit trail Technical Expectations Your solution should demonstrate: Understanding of Solana rent mechanics Understanding of how Kora sponsors accounts Safe handling of account closures and rent reclaim logic Clean and readable code with comments You do not need to build a frontend unless it helps explain the tool. Tech Stack Suggestions You may use any stack, but these tools are encouraged: Solana JSON RPC – account state and rent inspection Kora APIs and docs – sponsored transaction logic TypeScript or Rust – bot or service logic Anchor – optional, if custom program logic is needed Telegram Bot API – optional interface layer Resources Kora Operator Docs https://launch.solana.com/docs/kora/operators https://launch.solana.com/docs/kora/getting-started
-
----
-
-**Assistant:**
-
-I'll analyze the codebase in detail to understand the tool and create a comprehensive README with diagrams. Let me start by exploring the repository structure thoroughly.
-
-Now let me read the key source files to understand the architecture:
-
-Let me continue reading the core modules:
-
-Let me read the rest of the main.rs to understand all available commands, and read some additional helper files:
-
-Let me read a few more key files to understand the complete architecture:
-
-Perfect! Now I have a comprehensive understanding of the codebase. Let me create a detailed README with Mermaid diagrams:
-
-Now I'll create a comprehensive README document based on my analysis of the codebase:
-
----
-
 # **Kora Rent-Reclaim Bot: Comprehensive Documentation**
 
 ## **Table of Contents**
