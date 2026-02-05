@@ -10,6 +10,8 @@ use crate::{
 };
 use tracing::{info, debug, warn};
 
+
+#[derive(Clone)]
 pub struct KoraMonitor {
     rpc_client: SolanaRpcClient,
     operator_pubkey: Pubkey,

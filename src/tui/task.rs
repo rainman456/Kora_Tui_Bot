@@ -133,6 +133,7 @@ impl TaskManager {
             let entry = AccountEntry {
                 address: account_info.pubkey,
                 program: account_info.account_type.to_string(),
+                //program: format!("{:?}", account_info.account_type),
                 age_days,
                 rent_sol,
                 last_tx: account_info.created_at,
@@ -387,8 +388,8 @@ impl TaskManager {
         tokio::spawn(async move {
             loop {
                 let start = std::time::Instant::now();
-                
-                let status = match rpc_client.client.get_health().await {
+                //let status = match rpc_client.client.get_health().await
+                let status = match rpc_client.client.get_health(){
                     Ok(_) => {
                         let latency = start.elapsed().as_millis() as u64;
                         if latency < 500 {

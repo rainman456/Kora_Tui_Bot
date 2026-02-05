@@ -12,6 +12,7 @@ use crate::{
 };
 use tracing::debug;
 
+#[derive(Clone)]
 pub struct EligibilityChecker {
     rpc_client: SolanaRpcClient,
     config: Config,

@@ -137,7 +137,9 @@ fn render_summary_bar(f: &mut Frame, area: Rect, state: &State) {
         ];
         
         if !subtitle.is_empty() {
-            text_lines.push(Line::from(Span::styled(*subtitle, Style::default().fg(COLOR_MUTED))));
+            //text_lines.push(Line::from(Span::styled(*subtitle, Style::default().fg(COLOR_MUTED))));
+            text_lines.push(Line::from(Span::styled(subtitle.clone(), Style::default().fg(COLOR_MUTED))));
+
         }
         
         let block = Block::default()

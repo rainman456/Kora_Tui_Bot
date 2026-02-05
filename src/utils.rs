@@ -22,6 +22,7 @@ pub fn format_timestamp(timestamp: &chrono::DateTime<chrono::Utc>) -> String {
 }
 
 /// Simple rate limiter using token bucket algorithm
+#[derive(Clone)]
 pub struct RateLimiter {
     delay: std::time::Duration,
     last_call: tokio::sync::Mutex<Option<std::time::Instant>>, // ✅ FIX: Use tokio::sync::Mutex
