@@ -50,18 +50,7 @@ pub enum AccountType {
 }
 
 
-use std::fmt;
 
-impl fmt::Display for AccountType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            AccountType::System => write!(f, "System"),
-            AccountType::SplToken => write!(f, "SPL Token"),
-            AccountType::SplMint => write!(f, "SPL Mint"),
-            AccountType::Other(pubkey) => write!(f, "Other({})", pubkey),
-        }
-    }
-}
 
 impl AccountDiscovery {
     pub fn new(rpc_client: SolanaRpcClient, fee_payer: Pubkey) -> Self {
