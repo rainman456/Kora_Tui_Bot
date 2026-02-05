@@ -45,6 +45,7 @@ pub struct SponsoredAccountInfo {
 pub enum AccountType {
     System,
     SplToken,
+    SplMint,  // SPL Token Mint accounts (82 bytes, not reclaimable)
     Other(Pubkey),
 }
 
@@ -109,6 +110,27 @@ impl AccountDiscovery {
                     let sponsored = self.parse_transaction_for_creations(&tx, signature).await?;
                     // Only add accounts we haven't seen before
                     for account_info in sponsored {
+                        // FILTER: Skip mint accounts (82 bytes, not reclaimable)
+                        if account_info.data_size == 82 {
+                            debug!(
+                                "Filtering mint account {} (82 bytes, not reclaimable)",
+                                account_info.pubkey
+                            );
+                            continue;
+                        }
+                        
+                        // FILTER: Only include token accounts (165 bytes) from System creations
+                        // This handles the case where System::createAccount is used to create
+                        // an account that will be owned by Token program
+                        if account_info.account_type == AccountType::System && account_info.data_size != 165 {
+                            debug!(
+                                "Filtering system account {} (size: {}, likely not a token account)",
+                                account_info.pubkey,
+                                account_info.data_size
+                            );
+                            continue;
+                        }
+                        
                         if seen_accounts.insert(account_info.pubkey) {
                             all_sponsored.push(account_info);
                         }
@@ -184,6 +206,25 @@ impl AccountDiscovery {
                     let sponsored = self.parse_transaction_for_creations(&tx, signature).await?;
                     // Only add accounts we haven't seen before
                     for account_info in sponsored {
+                        // FILTER: Skip mint accounts (82 bytes, not reclaimable)
+                        if account_info.data_size == 82 {
+                            debug!(
+                                "Filtering mint account {} (82 bytes, not reclaimable)",
+                                account_info.pubkey
+                            );
+                            continue;
+                        }
+                        
+                        // FILTER: Only include token accounts (165 bytes) from System creations
+                        if account_info.account_type == AccountType::System && account_info.data_size != 165 {
+                            debug!(
+                                "Filtering system account {} (size: {}, likely not a token account)",
+                                account_info.pubkey,
+                                account_info.data_size
+                            );
+                            continue;
+                        }
+                        
                         if seen_accounts.insert(account_info.pubkey) {
                             all_sponsored.push(account_info);
                         }

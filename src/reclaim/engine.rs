@@ -199,10 +199,11 @@ pub async fn reclaim_account(
     let instruction = self.build_close_instruction(account_pubkey, account_type, current_balance)?;
     
     if self.dry_run {
-        info!("DRY RUN: Would reclaim {} lamports from {}", balance, account_pubkey);
+        info!("DRY RUN: Would reclaim {} lamports from {}", current_balance, account_pubkey);
         return Ok(ReclaimResult {
             signature: None,
-            amount_reclaimed: balance,
+            //amount_reclaimed: balance,
+            amount_reclaimed: current_balance,
             account: *account_pubkey,
             dry_run: true,
         });
@@ -230,7 +231,8 @@ pub async fn reclaim_account(
     
     Ok(ReclaimResult {
         signature: Some(signature),
-        amount_reclaimed: balance,
+        //amount_reclaimed: balance,
+         amount_reclaimed: current_balance, 
         account: *account_pubkey,
         dry_run: false,
     })

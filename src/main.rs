@@ -33,7 +33,10 @@ async fn main() {
     };
 
     let result = match cli.command {
-        Commands::Tui => run_tui(config).await,
+       Commands::Tui => {
+     info!("Launching Nexus TUI...");
+    tui::run_tui(config).await
+}
 
         Commands::Scan {
             verbose,
@@ -59,7 +62,7 @@ async fn main() {
             send_daily_summary(&config).await
         }
 
-        // ✅ NEW: List command using get_all_accounts
+        // List command using get_all_accounts
         Commands::List {
             status,
             format,
@@ -69,13 +72,13 @@ async fn main() {
             list_accounts(&config, &status, &format, detailed).await
         }
 
-        // ✅ NEW: Reset command using clear_checkpoints
+        //  NEW: Reset command using clear_checkpoints
         Commands::Reset { yes } => {
             info!("Resetting checkpoints...");
             reset_checkpoints(&config, yes).await
         }
 
-        // ✅ NEW: Checkpoints command using get_checkpoint_info
+        // : Checkpoints command using get_checkpoint_info
         Commands::Checkpoints => {
             info!("Showing checkpoint information...");
             show_checkpoints(&config).await
@@ -147,7 +150,7 @@ async fn scan_accounts(
 
     let db = storage::Database::new(&config.database.path)?;
 
-    // ✅ USE: get_all_accounts to cache existing accounts and avoid re-processing
+    // get_all_accounts to cache existing accounts and avoid re-processing
     let existing_accounts = db.get_all_accounts()?;
     info!(
         "Found {} existing accounts in database",
@@ -157,7 +160,7 @@ async fn scan_accounts(
     let existing_pubkeys: std::collections::HashSet<String> =
         existing_accounts.iter().map(|a| a.pubkey.clone()).collect();
 
-    // ✅ USE: get_last_processed_slot to show scanning progress
+    //  get_last_processed_slot to show scanning progress
     if let Ok(Some(last_slot)) = db.get_last_processed_slot() {
         println!(
             "Resuming from last checkpoint at slot: {}",

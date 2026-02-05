@@ -1,11 +1,4 @@
-/**
- * This file is used to setup the client for the Kora project.
- * It creates the necessary keypairs and the mint account.
- * It airdrops SOL to a Test Sender and Kora Private Key.
- * It initializes a fake/local USDC mint account.
- * It creates the associated token accounts for the Test Sender, Kora Private Key, and Destination KeyPair.
- * It mints 100,000 tokens to the Test Sender, Kora Private Key, and Destination KeyPair.
- */
+// Fixed version - mints tokens to ALL wallets, not just the owner
 import { assertKeyGenerationIsAvailable } from "@solana/assertions";
 import { getCreateAccountInstruction } from "@solana-program/system";
 import {
@@ -15,6 +8,8 @@ import {
     getMintSize,
     getMintToInstruction,
     TOKEN_PROGRAM_ADDRESS,
+    getSetAuthorityInstruction,
+    AuthorityType,
 } from "@solana-program/token";
 import {
     airdropFactory,
@@ -57,7 +52,7 @@ import { appendFile } from 'fs/promises';
 import path from "path";
 import dotenv from "dotenv";
 
-dotenv.config({path: path.join(process.cwd(), '..', '.env')});
+dotenv.config({ path: path.join(process.cwd(), '..', '.env') });
 
 const LAMPORTS_PER_SOL = BigInt(1_000_000_000);
 const DECIMALS = 6;
@@ -101,12 +96,12 @@ export const signAndSendTransaction = async (
     return signature;
 };
 
-
 async function sendAndConfirmInstructions(
     client: Client,
     payer: TransactionSigner,
     instructions: Instruction[],
-    description: string
+    description: string,
+    additionalSigners: KeyPairSigner[] = []
 ): Promise<Signature> {
     try {
         const simulationTx = await pipe(
@@ -131,99 +126,77 @@ async function sendAndConfirmInstructions(
 async function createB58SecretKey(): Promise<string> {
     await assertKeyGenerationIsAvailable();
     const base58Decoder = getBase58Decoder();
-    // Create keypair with exportable private key
-    // For demo purposes only
     const keyPair = await crypto.subtle.generateKey(
-        "Ed25519",  // Algorithm. Native implementation status: https://github.com/WICG/webcrypto-secure-curves/issues/20
-        true,       // Allows the private key to be exported (eg for saving it to a file) - public key is always extractable see https://wicg.github.io/webcrypto-secure-curves/#ed25519-operations
-        ["sign", "verify"], // Allowed uses
+        "Ed25519",
+        true,
+        ["sign", "verify"],
     );
 
-    // Get the raw 32-byte private key
     const pkcs8ArrayBuffer = await crypto.subtle.exportKey("pkcs8", keyPair.privateKey);
     const pkcs8Bytes = new Uint8Array(pkcs8ArrayBuffer);
     const rawPrivateKey = pkcs8Bytes.slice(-32);
 
-    // Get the 32-byte public key
     const publicKeyArrayBuffer = await crypto.subtle.exportKey("raw", keyPair.publicKey);
     const publicKeyBytes = new Uint8Array(publicKeyArrayBuffer);
 
-    // Create Solana-style 64-byte secret key (private + public)
     const solanaSecretKey = new Uint8Array(64);
-    solanaSecretKey.set(rawPrivateKey, 0);     // First 32 bytes
-    solanaSecretKey.set(publicKeyBytes, 32);   // Next 32 bytes
-
-    const b58Secret = base58Decoder.decode(solanaSecretKey)
-
-    return b58Secret;
+    solanaSecretKey.set(rawPrivateKey, 0);
+    solanaSecretKey.set(publicKeyBytes, 32);
+    return base58Decoder.decode(solanaSecretKey);
 }
 
 const createKeyPairSignerFromB58Secret = async (b58Secret: string) => {
     const base58Encoder = getBase58Encoder();
-    const b58SecretEncoded = base58Encoder.encode(b58Secret);
-    return await createKeyPairSignerFromBytes(b58SecretEncoded);
+    return await createKeyPairSignerFromBytes(base58Encoder.encode(b58Secret));
 }
 
 const addKeypairToEnvFile = async (
     variableName: string,
     envPath: string = path.join(process.cwd(), '..'),
     envFileName: string = ".env",
-    b58Secret?: string,
+    b58Secret?: string
 ) => {
-
-    if (!b58Secret) {
-        b58Secret = await createB58SecretKey();
-    }
-
+    if (!b58Secret) b58Secret = await createB58SecretKey();
     const keypairSigner = await createKeyPairSignerFromB58Secret(b58Secret);
-
     const fullPath = path.join(envPath, envFileName);
     try {
-        await appendFile(
-            fullPath,
-            `\n# Solana Address: ${keypairSigner.address}\n${variableName}=${b58Secret}\n`,
-        );
+        await appendFile(fullPath, `\n# Solana Address: ${keypairSigner.address}\n${variableName}=${b58Secret}\n`);
         console.log(`${variableName} added to env file successfully`);
         return keypairSigner;
-    } catch (e) {
-        throw e;
-    }
+    } catch (e) { throw e; }
 };
 
+async function getOrCreateEnvKeyPair(envKey: string) {
+    if (process.env[envKey]) return await createKeyPairSignerFromB58Secret(process.env[envKey]);
+    return await addKeypairToEnvFile(envKey);
+}
 
+// FIXED: Mint tokens to ALL specified wallets, not just owner
 async function initializeToken({
     client,
     mintAuthority,
     payer,
-    owner,
     mint,
     dropAmount,
     decimals,
-    otherAtaWallets,
+    walletsToFund, // Changed name to be clearer
+    koraCloseAuthority,
 }: {
     client: Client,
     mintAuthority: KeyPairSigner<string>,
     payer: KeyPairSigner<string>,
-    owner: KeyPairSigner<string>,
     mint: KeyPairSigner<string>,
     dropAmount: number,
     decimals: number,
-    otherAtaWallets?: KeyPairSigner<string>[],
+    walletsToFund: KeyPairSigner<string>[], // These wallets will get ATAs AND tokens
+    koraCloseAuthority?: KeyPairSigner<string>,
 }) {
-    // Get Owner ATA
-    const [ata] = await findAssociatedTokenPda({
-        mint: mint.address,
-        owner: owner.address,
-        tokenProgram: TOKEN_PROGRAM_ADDRESS,
-    });
-
     // Get Mint size & rent
     const mintSpace = BigInt(getMintSize());
     const mintRent = await client.rpc.getMinimumBalanceForRentExemption(mintSpace).send();
 
-    // Create instructions for new token mint
+    // Create mint account and initialize it
     const baseInstructions = [
-        // Create the Mint Account
         getCreateAccountInstruction({
             payer,
             newAccount: mint,
@@ -231,55 +204,92 @@ async function initializeToken({
             space: mintSpace,
             programAddress: TOKEN_PROGRAM_ADDRESS,
         }),
-        // Initialize the Mint
         getInitializeMintInstruction({
             mint: mint.address,
-            decimals: DECIMALS,
+            decimals: decimals,
             mintAuthority: mintAuthority.address
-        }),
-        // Create Associated Token Account
-        await getCreateAssociatedTokenIdempotentInstructionAsync({
-            mint: mint.address,
-            payer,
-            owner: owner.address,
-        }),
-        // Mint To the Destination Associated Token Account
-        getMintToInstruction({
-            mint: mint.address,
-            token: ata,
-            amount: BigInt(dropAmount * 10 ** decimals),
-            mintAuthority,
         }),
     ];
 
-    // Generate Create ATA instructions for other token accounts we wish to add
-    const otherAtaInstructions = otherAtaWallets 
-        ? await Promise.all(otherAtaWallets.map(async (wallet) => 
+    // Create ATAs and mint tokens to ALL wallets
+    const ataMintInstructions = [];
+    for (const wallet of walletsToFund) {
+        // Get ATA address
+        const [ata] = await findAssociatedTokenPda({
+            mint: mint.address,
+            owner: wallet.address,
+            tokenProgram: TOKEN_PROGRAM_ADDRESS,
+        });
+
+        // Create ATA
+        ataMintInstructions.push(
             await getCreateAssociatedTokenIdempotentInstructionAsync({
                 mint: mint.address,
                 payer,
                 owner: wallet.address,
             })
-        ))
-        : [];
+        );
 
-    const instructions = [...baseInstructions, ...otherAtaInstructions];
-
-    await sendAndConfirmInstructions(client, payer, instructions, 'Mint account created and initialized');
-
-    console.log(`Initialized token ${mint.address} / Dropped ${dropAmount} tokens to ${owner.address}`);
-
-}
-
-async function getOrCreateEnvKeyPair(envKey: string) {
-    if (process.env[envKey]) {
-        return await createKeyPairSignerFromB58Secret(process.env[envKey]);
+        // Mint tokens to this ATA
+        ataMintInstructions.push(
+            getMintToInstruction({
+                mint: mint.address,
+                token: ata,
+                amount: BigInt(dropAmount * 10 ** decimals),
+                mintAuthority,
+            })
+        );
     }
-    return await addKeypairToEnvFile(envKey);
+
+    // Send transaction to create mint and all ATAs with tokens
+    await sendAndConfirmInstructions(
+        client,
+        payer,
+        [...baseInstructions, ...ataMintInstructions],
+        'Mint account created, ATAs initialized, and tokens minted'
+    );
+
+    console.log(`\n✅ Initialized token ${mint.address}`);
+    console.log(`✅ Dropped ${dropAmount} tokens to ${walletsToFund.length} wallets:`);
+    walletsToFund.forEach(w => console.log(`   - ${w.address}`));
+
+    // Set Kora as close authority for all ATAs
+    if (koraCloseAuthority) {
+        console.log(`\n🔑 Setting Kora node (${koraCloseAuthority.address}) as close authority for ATAs...`);
+
+        for (const wallet of walletsToFund) {
+            const [walletAta] = await findAssociatedTokenPda({
+                mint: mint.address,
+                owner: wallet.address,
+                tokenProgram: TOKEN_PROGRAM_ADDRESS,
+            });
+
+            const setAuthorityIx = getSetAuthorityInstruction({
+                owned: walletAta,
+                owner: wallet,
+                authorityType: AuthorityType.CloseAccount,
+                newAuthority: koraCloseAuthority.address,
+            });
+
+            await sendAndConfirmInstructions(
+                client,
+                payer,
+                [setAuthorityIx],
+                `Set close authority for ${wallet.address.slice(0, 8)}...`,
+                [wallet]
+            );
+
+            console.log(`  ✓ Set close authority for ${wallet.address.slice(0, 8)}...'s ATA`);
+        }
+
+        console.log(`✅ Kora node can now reclaim rent from empty ATAs!`);
+    }
 }
 
 async function main() {
-    console.log('Starting setup...');
+    console.log('\n🚀 Starting FIXED setup for Kora rent reclaim testing...\n');
+    console.log('═'.repeat(70));
+
     // 1 - Create client
     const httpEndpoint = 'http://127.0.0.1:8899';
     const wsEndpoint = 'ws://127.0.0.1:8900';
@@ -288,37 +298,47 @@ async function main() {
     const airdrop = airdropFactory({ rpc, rpcSubscriptions });
     const client: Client = { rpc, rpcSubscriptions };
 
+    console.log('📡 Connected to local validator');
+
     // 2 - Get or create keypairs
+    console.log('🔑 Loading keypairs...');
     const USDC_LOCAL_KEY = await getOrCreateEnvKeyPair('USDC_LOCAL_KEY');
     const TEST_SENDER_KEYPAIR = await getOrCreateEnvKeyPair('TEST_SENDER_KEYPAIR');
     const KORA_PRIVATE_KEY = await getOrCreateEnvKeyPair('KORA_PRIVATE_KEY');
     const MINT_AUTHORITY = await getOrCreateEnvKeyPair('MINT_AUTHORITY');
     const DESTINATION_KEYPAIR = await getOrCreateEnvKeyPair('DESTINATION_KEYPAIR');
 
-    // 3 - Airdrop SOL to test sender and kora wallets
+    console.log(`   Test Sender: ${TEST_SENDER_KEYPAIR.address}`);
+    console.log(`   Kora Node:   ${KORA_PRIVATE_KEY.address}`);
+    console.log(`   Destination: ${DESTINATION_KEYPAIR.address}\n`);
+
+    // 3 - Airdrop SOL
+    console.log('💰 Airdropping SOL...');
     await Promise.all([
-        airdrop({
-            commitment: 'processed',
-            lamports: lamports(LAMPORTS_PER_SOL),
-            recipientAddress: KORA_PRIVATE_KEY.address
-        }),
-        airdrop({
-            commitment: 'processed',
-            lamports: lamports(LAMPORTS_PER_SOL),
-            recipientAddress: TEST_SENDER_KEYPAIR.address
-        }),
-    ])
-    
-    // 4 - Execute initializeToken
+        airdrop({ commitment: 'processed', lamports: lamports(LAMPORTS_PER_SOL), recipientAddress: KORA_PRIVATE_KEY.address }),
+        airdrop({ commitment: 'processed', lamports: lamports(LAMPORTS_PER_SOL), recipientAddress: TEST_SENDER_KEYPAIR.address }),
+        airdrop({ commitment: 'processed', lamports: lamports(LAMPORTS_PER_SOL), recipientAddress: MINT_AUTHORITY.address }),
+    ]);
+    console.log('   ✓ 1 SOL → Test Sender, Kora Node, Mint Authority\n');
+
+    // 4 - Execute initializeToken - FIXED: mint to all wallets
+    console.log('🪙  Initializing token with Kora close authority...');
+    console.log('═'.repeat(70));
+
     await initializeToken({
         client,
         mintAuthority: MINT_AUTHORITY,
         payer: KORA_PRIVATE_KEY,
-        owner: TEST_SENDER_KEYPAIR,
         mint: USDC_LOCAL_KEY,
         dropAmount: DROP_AMOUNT,
         decimals: DECIMALS,
-        otherAtaWallets: [TEST_SENDER_KEYPAIR, KORA_PRIVATE_KEY, DESTINATION_KEYPAIR],
-    })
+        // FIXED: These wallets will ALL receive tokens now
+        walletsToFund: [TEST_SENDER_KEYPAIR, KORA_PRIVATE_KEY, DESTINATION_KEYPAIR],
+        koraCloseAuthority: KORA_PRIVATE_KEY,
+    });
+
+    console.log('\n═'.repeat(70));
+    console.log('\n✨ Setup complete! You can now test rent reclaim.');
 }
-main().catch(e => console.error('Error:', e));
+
+main().catch(e => console.error('❌ Error:', e));

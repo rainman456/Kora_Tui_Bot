@@ -51,6 +51,8 @@ ratatui = "0.26"
 crossterm = "0.27"
 unicode-width = "0.1"
 tui-input = "0.8"
+csv = "1.3"
+
 
 # Utilities
 indicatif = "0.17"

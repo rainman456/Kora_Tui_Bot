@@ -1,378 +1,730 @@
-use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
-    execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-};
 use ratatui::{
-    backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout, Alignment},
+    backend::Backend,
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Row, Table, Tabs},
-    Frame, Terminal,
+    widgets::{Block, Borders, BorderType, Cell, Clear, List, ListItem, Paragraph, Row, Table, TableState, Wrap},
+    Frame,
 };
-use std::io;
-use crate::tui::app::{App, Screen};
-use crate::config::Config;
-use crate::error::Result;
 
-pub async fn run_tui(config: Config) -> Result<()> {
-    // Setup terminal
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-    
-    // Create app
-    let mut app = App::new(config).await?;
-    
-    // Initial data load
-    app.refresh_stats().await?;
-    
-    // Run app
-    let res = run_app(&mut terminal, &mut app).await;
-    
-    // Restore terminal
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
-    
-    res
-}
+use super::state::{State, AccountStatus, LogLevel, HealthStatus};
 
-async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> Result<()> {
-    loop {
-        terminal.draw(|f| ui(f, app))?;
-        
-        if event::poll(std::time::Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => {
-                        app.should_quit = true;
-                    }
-                    KeyCode::Tab => app.next_screen(),
-                    KeyCode::BackTab => app.previous_screen(),
-                    KeyCode::Down | KeyCode::Char('j') => app.next_item(),
-                    KeyCode::Up | KeyCode::Char('k') => app.previous_item(),
-                    KeyCode::Char('s') => {
-                        app.scan_accounts().await?;
-                    }
-                    KeyCode::Char('r') => {
-                        app.refresh_stats().await?;
-                    }
-                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        app.should_quit = true;
-                    }
-                    KeyCode::Char('t') => {
-                        // Toggle Telegram
-                        app.toggle_telegram();
-                    }
-                    KeyCode::Char('T') => {
-                        // Test Telegram (Shift+T)
-                        app.test_telegram().await;
-                    }
-                    KeyCode::Enter => {
-                        if app.current_screen == Screen::Accounts {
-                            app.reclaim_selected().await?;
-                        }
-                    }
-                    KeyCode::Char('b') => {
-                        if app.current_screen == Screen::Accounts {
-                            app.batch_reclaim().await?;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        } else {
-            // Timeout expired (tick)
-            app.on_tick().await;
-        }
-        
-        if app.should_quit {
-            break;
-        }
-    }
-    
-    Ok(())
-}
+// High-contrast color palette
+const COLOR_PRIMARY: Color = Color::Cyan;
+const COLOR_SUCCESS: Color = Color::Green;
+const COLOR_WARNING: Color = Color::Yellow;
+const COLOR_DANGER: Color = Color::Red;
+const COLOR_INFO: Color = Color::Blue;
+const COLOR_MUTED: Color = Color::DarkGray;
+const COLOR_TEXT: Color = Color::White;
+const COLOR_BG_HIGHLIGHT: Color = Color::Rgb(40, 40, 60);
+const COLOR_BORDER_ACTIVE: Color = Color::Cyan;
+const COLOR_BORDER_INACTIVE: Color = Color::DarkGray;
 
-fn ui(f: &mut Frame, app: &App) {
+/// Render the complete Nexus layout
+pub fn render<B: Backend>(f: &mut Frame<B>, state: &State) {
+    let size = f.size();
+    
+    // Main layout structure
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
-            Constraint::Min(0),
-            Constraint::Length(3),
+            Constraint::Length(3),  // Header
+            Constraint::Length(5),  // Summary Bar
+            Constraint::Min(10),    // Main Workspace
+            Constraint::Length(7),  // Activity Log
+            Constraint::Length(3),  // Footer
         ])
-        .split(f.size());
+        .split(size);
     
-    // Header
-    render_header(f, chunks[0], app);
+    render_header(f, chunks[0], state);
+    render_summary_bar(f, chunks[1], state);
+    render_workspace(f, chunks[2], state);
+    render_activity_log(f, chunks[3], state);
+    render_footer(f, chunks[4], state);
     
-    // Content
-    match app.current_screen {
-        Screen::Dashboard => render_dashboard(f, chunks[1], app),
-        Screen::Accounts => render_accounts(f, chunks[1], app),
-        Screen::Operations => render_operations(f, chunks[1], app),
-        Screen::Settings => render_settings(f, chunks[1], app),
+    // Render help overlay on top if active
+    if state.show_help {
+        render_help_overlay(f, size);
     }
-    
-    // Status bar
-    render_status(f, chunks[2], app);
 }
 
-fn render_header(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
-    let title = Line::from(vec![
-        Span::raw("⚡ "),
-        Span::styled("Kora Rent Reclaim", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        Span::raw(" | "),
-        Span::styled(format!("{:?}", app.config.solana.network), Style::default().fg(Color::Green)),
+/// Header: Network, Node, Mode, RPC Health
+fn render_header<B: Backend>(f: &mut Frame<B>, area: Rect, state: &State) {
+    let health_color = match state.rpc_health.status {
+        HealthStatus::Healthy => COLOR_SUCCESS,
+        HealthStatus::Degraded => COLOR_WARNING,
+        HealthStatus::Down => COLOR_DANGER,
+    };
+    
+    let mode_color = match state.current_mode {
+        super::state::Mode::Monitor => COLOR_PRIMARY,
+        super::state::Mode::DryRun => COLOR_WARNING,
+        super::state::Mode::Execute => COLOR_DANGER,
+    };
+    
+    // Health indicator icon
+    let health_icon = match state.rpc_health.status {
+        HealthStatus::Healthy => "●",
+        HealthStatus::Degraded => "◐",
+        HealthStatus::Down => "○",
+    };
+    
+    let header_line = Line::from(vec![
+        Span::styled("⚡ ", Style::default().fg(COLOR_WARNING)),
+        Span::styled("KORA NEXUS", Style::default().fg(COLOR_PRIMARY).add_modifier(Modifier::BOLD)),
+        Span::styled(" │ ", Style::default().fg(COLOR_MUTED)),
+        Span::styled(&state.network, Style::default().fg(COLOR_SUCCESS).add_modifier(Modifier::BOLD)),
+        Span::styled(" │ ", Style::default().fg(COLOR_MUTED)),
+        Span::styled("Mode: ", Style::default().fg(COLOR_MUTED)),
+        Span::styled(format!("{:?}", state.current_mode), Style::default().fg(mode_color).add_modifier(Modifier::BOLD)),
+        Span::styled(" │ ", Style::default().fg(COLOR_MUTED)),
+        Span::styled(format!("{} ", health_icon), Style::default().fg(health_color).add_modifier(Modifier::BOLD)),
+        Span::styled("RPC: ", Style::default().fg(COLOR_MUTED)),
+        Span::styled(
+            format!("{}ms", state.rpc_health.latency_ms),
+            Style::default().fg(health_color).add_modifier(Modifier::BOLD)
+        ),
+        Span::styled(" │ ", Style::default().fg(COLOR_MUTED)),
+        Span::styled("? ", Style::default().fg(COLOR_INFO)),
+        Span::styled("Help", Style::default().fg(COLOR_MUTED)),
     ]);
     
-    let block = Block::default().borders(Borders::ALL);
-    let paragraph = Paragraph::new(title).block(block).alignment(Alignment::Center);
+    let header_style = if state.rpc_health.status == HealthStatus::Down {
+        Style::default().bg(COLOR_DANGER).fg(COLOR_TEXT)
+    } else {
+        Style::default()
+    };
+    
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(COLOR_PRIMARY))
+        .style(header_style);
+    
+    let paragraph = Paragraph::new(header_line)
+        .block(block)
+        .alignment(Alignment::Center);
+    
     f.render_widget(paragraph, area);
 }
 
-fn render_status(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
-    let screens = vec!["Dashboard", "Accounts", "Operations", "Settings"];
-    let screen_idx = match app.current_screen {
-        Screen::Dashboard => 0,
-        Screen::Accounts => 1,
-        Screen::Operations => 2,
-        Screen::Settings => 3,
+/// Summary Bar: 5 overview cards
+fn render_summary_bar<B: Backend>(f: &mut Frame<B>, area: Rect, state: &State) {
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(20); 5])
+        .split(area);
+    
+    // Calculate percentages for visual bars
+    let eligible_pct = if state.total_accounts > 0 {
+        (state.eligible_accounts as f64 / state.total_accounts as f64 * 100.0) as u16
+    } else {
+        0
     };
     
-    let help_text = match app.current_screen {
-        Screen::Dashboard => " s:Scan | r:Refresh | t:Toggle TG | T:Test TG ",
-        Screen::Accounts => " Enter:Reclaim | b:Batch | s:Scan | t:Toggle TG ",
-        Screen::Operations => " r:Refresh ",
-        Screen::Settings => " t:Toggle TG | T:Test TG ",
-    };
+    let cards = [
+        ("📊 TOTAL", state.total_accounts.to_string(), "", COLOR_PRIMARY, COLOR_MUTED),
+        ("🔒 LOCKED", format!("{:.4} SOL", state.total_locked_sol), "", COLOR_WARNING, COLOR_MUTED),
+        ("✓ ELIGIBLE", state.eligible_accounts.to_string(), format!("{}%", eligible_pct), COLOR_SUCCESS, COLOR_SUCCESS),
+        ("💰 RECLAIMED", format!("{:.4} SOL", state.total_reclaimed_sol), "", COLOR_SUCCESS, COLOR_SUCCESS),
+        ("⚠ AT-RISK", format!("{:.4} SOL", state.at_risk_sol), ">30d", COLOR_DANGER, COLOR_DANGER),
+    ];
     
+    for (i, (label, value, subtitle, fg_color, border_color)) in cards.iter().enumerate() {
+        let mut text_lines = vec![
+            Line::from(Span::styled(*label, Style::default().fg(COLOR_MUTED).add_modifier(Modifier::DIM))),
+            Line::from(Span::styled(value, Style::default().fg(*fg_color).add_modifier(Modifier::BOLD))),
+        ];
+        
+        if !subtitle.is_empty() {
+            text_lines.push(Line::from(Span::styled(*subtitle, Style::default().fg(COLOR_MUTED))));
+        }
+        
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(*border_color));
+        
+        let para = Paragraph::new(text_lines)
+            .block(block)
+            .alignment(Alignment::Center);
+        
+        f.render_widget(para, chunks[i]);
+    }
+}
+
+/// Main Workspace: Monitor table (70%) + Decision panel (30%)
+fn render_workspace<B: Backend>(f: &mut Frame<B>, area: Rect, state: &State) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
         .split(area);
     
-    let tabs = Tabs::new(screens)
-        .block(Block::default().borders(Borders::LEFT | Borders::TOP | Borders::BOTTOM))
-        .select(screen_idx)
-        .style(Style::default().fg(Color::White))
-        .highlight_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
-    
-    f.render_widget(tabs, chunks[0]);
-    
-    let help = Paragraph::new(Line::from(Span::styled(
-        help_text,
-        Style::default().fg(Color::DarkGray)
-    )))
-    .block(Block::default().borders(Borders::ALL));
-    
-    f.render_widget(help, chunks[1]);
+    render_monitor_table(f, chunks[0], state);
+    render_decision_panel(f, chunks[1], state);
 }
 
-fn render_dashboard(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(5),  // Stats row 1
-            Constraint::Length(3),  // Stats row 2 (Telegram)
-            Constraint::Length(3),  // Alerts (NEW)
-            Constraint::Min(0)      // Logs
+/// Monitor Table: Account list with selection
+fn render_monitor_table<B: Backend>(f: &mut Frame<B>, area: Rect, state: &State) {
+    let header = Row::new(vec![
+        Cell::from("Address"),
+        Cell::from("Program"),
+        Cell::from("Age"),
+        Cell::from("Rent"),
+        Cell::from("Last Tx"),
+        Cell::from("Status"),
+    ])
+    .style(Style::default().fg(COLOR_WARNING).add_modifier(Modifier::BOLD | Modifier::UNDERLINED))
+    .bottom_margin(0);
+    
+    let rows: Vec<Row> = state.accounts.iter().enumerate().map(|(idx, acc)| {
+        // Status-based styling with high contrast
+        let (style, status_text, icon) = match acc.status {
+            AccountStatus::Eligible => (
+                Style::default().fg(COLOR_SUCCESS).add_modifier(Modifier::BOLD),
+                acc.status.display(),
+                "✓"
+            ),
+            AccountStatus::Whitelisted => (
+                Style::default().fg(COLOR_MUTED).add_modifier(Modifier::DIM),
+                acc.status.display(),
+                "🔒"
+            ),
+            AccountStatus::Reclaimed => (
+                Style::default().fg(COLOR_PRIMARY),
+                acc.status.display(),
+                "✓"
+            ),
+            AccountStatus::Processing => (
+                Style::default().fg(COLOR_INFO).add_modifier(Modifier::SLOW_BLINK),
+                acc.status.display(),
+                "⟳"
+            ),
+            AccountStatus::Failed => (
+                Style::default().fg(COLOR_DANGER),
+                acc.status.display(),
+                "✗"
+            ),
+            AccountStatus::Active => (
+                Style::default().fg(COLOR_MUTED),
+                acc.status.display(),
+                "○"
+            ),
+        };
+        
+        // Compact address display
+        let addr_str = format!("{}..{}", 
+            &acc.address.to_string()[..4], 
+            &acc.address.to_string()[acc.address.to_string().len()-4..]
+        );
+        
+        // Smart age formatting
+        let age_str = if acc.age_days > 365 {
+            format!("{}y", acc.age_days / 365)
+        } else if acc.age_days > 30 {
+            format!("{}mo", acc.age_days / 30)
+        } else {
+            format!("{}d", acc.age_days)
+        };
+        
+        // Compact date
+        let last_tx_str = acc.last_tx.format("%m/%d").to_string();
+        
+        // Highlight row based on selection
+        let row_style = if idx == state.selected_index {
+            style.bg(COLOR_BG_HIGHLIGHT)
+        } else {
+            style
+        };
+        
+        Row::new(vec![
+            Cell::from(addr_str),
+            Cell::from(acc.program.chars().take(10).collect::<String>()),
+            Cell::from(age_str),
+            Cell::from(format!("{:.4}", acc.rent_sol)),
+            Cell::from(last_tx_str),
+            Cell::from(format!("{} {}", icon, status_text)),
         ])
-        .split(area);
+        .style(row_style)
+        .height(1)
+    }).collect();
     
-    // Stats row 1
-    let stats_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(25); 4])
-        .split(chunks[0]);
-    
-    let stats = [
-        ("Total", app.total_accounts.to_string(), Color::Cyan),
-        ("Eligible", app.eligible_accounts.to_string(), Color::Green),
-        ("Locked", format!("{:.4} SOL", app.total_locked as f64 / 1_000_000_000.0), Color::Yellow),
-        ("Reclaimed", format!("{:.4} SOL", app.total_reclaimed as f64 / 1_000_000_000.0), Color::Green),
-    ];
-    
-    for (i, (label, value, color)) in stats.iter().enumerate() {
-        let text = vec![
-            Line::from(Span::raw(*label)),
-            Line::from(Span::styled(value, Style::default().fg(*color).add_modifier(Modifier::BOLD))),
-        ];
-        let block = Block::default().borders(Borders::ALL);
-        let para = Paragraph::new(text).block(block).alignment(Alignment::Center);
-        f.render_widget(para, stats_chunks[i]);
-    }
-    
-    // Telegram status row
-    let telegram_color = if app.telegram_enabled {
-        Color::Green
-    } else if app.telegram_configured {
-        Color::Yellow
+    let loading_indicator = if state.is_scanning {
+        " ⟳ SCANNING..."
+    } else if state.is_processing {
+        " ⟳ PROCESSING..."
     } else {
-        Color::Red
+        ""
     };
     
-    let telegram_icon = if app.telegram_enabled { "✓" } else { "✗" };
-    
-    let telegram_text = vec![
-        Line::from(vec![
-            Span::styled(
-                format!("{} Telegram Notifications: ", telegram_icon),
-                Style::default().fg(telegram_color).add_modifier(Modifier::BOLD)
-            ),
-            Span::styled(
-                &app.telegram_status,
-                Style::default().fg(telegram_color)
-            ),
-        ]),
-        Line::from(Span::styled(
-            "Press 't' to toggle | 'T' to test",
-            Style::default().fg(Color::DarkGray)
-        )),
-    ];
-    
-    let telegram_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(telegram_color));
-    let telegram_para = Paragraph::new(telegram_text)
-        .block(telegram_block)
-        .alignment(Alignment::Center);
-    f.render_widget(telegram_para, chunks[1]);
-    
-    // Alerts
-    let alert_text = if app.alerts.is_empty() {
-        vec![Line::from(Span::styled("No active alerts", Style::default().fg(Color::Gray)))]
-    } else {
-        app.alerts.iter().map(|alert| {
-            Line::from(Span::styled(alert, Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)))
-        }).collect()
-    };
-    
-    let alerts_block = Block::default().borders(Borders::ALL).title("Alerts");
-    let alerts_para = Paragraph::new(alert_text).block(alerts_block);
-    f.render_widget(alerts_para, chunks[2]);
-    
-    // Logs
-    let logs: Vec<ListItem> = app.logs.iter().rev().take(20).map(|log| {
-        ListItem::new(Line::from(Span::raw(log)))
-    }).collect();
-    
-    let logs_list = List::new(logs)
-        .block(Block::default().borders(Borders::ALL).title("Activity Log"));
-    f.render_widget(logs_list, chunks[3]);
-}
-
-fn render_accounts(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
-    // ✅ FIX: Add Created column to the table
-    let header = Row::new(vec!["Pubkey", "Balance", "Created", "Status"])
-        .style(Style::default().fg(Color::Yellow))
-        .bottom_margin(1);
-    
-    let rows: Vec<Row> = app.accounts.iter().map(|acc| {
-        let color = if acc.eligible { Color::Green } else { Color::Gray };
-        Row::new(vec![
-            format!("{}...{}", &acc.pubkey[..8], &acc.pubkey[acc.pubkey.len()-8..]),
-            format!("{:.4}", acc.balance as f64 / 1_000_000_000.0),
-            
-            acc.created.format("%m-%d %H:%M").to_string(),
-            acc.status.clone(),
-        ]).style(Style::default().fg(color))
-    }).collect();
-    
-   
-    let table = Table::new(
-        rows, 
-        [
-            Constraint::Percentage(40),  // Pubkey
-            Constraint::Percentage(20),  // Balance
-            Constraint::Percentage(20),  // Created (NEW)
-            Constraint::Percentage(20),  // Status
-        ]
-    )
-        .header(header)
-        .block(Block::default().borders(Borders::ALL).title("Accounts (Enter: Reclaim | b: Batch | s: Scan)"))
-        .highlight_style(Style::default().bg(Color::DarkGray));
-    
-    let mut state = ratatui::widgets::TableState::default();
-    state.select(Some(app.selected_index));
-    f.render_stateful_widget(table, area, &mut state);
-}
-fn render_operations(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
-    let header = Row::new(vec!["Time", "Account", "Amount", "Signature"])
-        .style(Style::default().fg(Color::Yellow))
-        .bottom_margin(1);
-    
-    let rows: Vec<Row> = app.operations.iter().map(|op| {
-        Row::new(vec![
-            op.timestamp.format("%m-%d %H:%M").to_string(),
-            format!("{}...", &op.account[..8]),
-            format!("{:.4}", op.amount as f64 / 1_000_000_000.0),
-            format!("{}...", &op.signature[..8]),
-        ])
-    }).collect();
+    let title = format!("📊 Monitor{} (↑↓ nav, mouse scroll)", loading_indicator);
     
     let table = Table::new(
         rows,
         [
-            Constraint::Percentage(20),
-            Constraint::Percentage(30),
-            Constraint::Percentage(20),
-            Constraint::Percentage(30)
+            Constraint::Length(10),  // Address
+            Constraint::Length(12),  // Program
+            Constraint::Length(5),   // Age
+            Constraint::Length(8),   // Rent
+            Constraint::Length(6),   // Last Tx
+            Constraint::Min(15),     // Status (flexible)
         ]
     )
-        .header(header)
-        .block(Block::default().borders(Borders::ALL).title("Reclaim History"));
+    .header(header)
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(COLOR_BORDER_ACTIVE))
+            .title(title)
+    )
+    .highlight_style(
+        Style::default()
+            .bg(COLOR_BG_HIGHLIGHT)
+            .fg(COLOR_TEXT)
+            .add_modifier(Modifier::BOLD)
+    )
+    .highlight_symbol("▶ ");
     
-    f.render_widget(table, area);
+    let mut table_state = TableState::default();
+    table_state.select(Some(state.selected_index));
+    
+    f.render_stateful_widget(table, area, &mut table_state);
 }
 
-fn render_settings(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
-    let mut settings = vec![
-        format!("RPC: {}", app.config.solana.rpc_url),
-        format!("Network: {:?}", app.config.solana.network),
-        format!("Min Inactive Days: {}", app.config.reclaim.min_inactive_days),
-        format!("Batch Size: {}", app.config.reclaim.batch_size),
-        format!("Dry Run: {}", app.config.reclaim.dry_run),
-        String::new(), // Separator
-        format!("=== Telegram Settings ==="),
-    ];
+/// Decision Panel: Contextual information for selected account
+fn render_decision_panel<B: Backend>(f: &mut Frame<B>, area: Rect, state: &State) {
+    let selected_account = state.get_selected_account();
     
-    if let Some(ref tg_config) = app.config.telegram {
-        settings.push(format!("Bot Token: {}...", &tg_config.bot_token[..10]));
-        settings.push(format!("Authorized Users: {}", tg_config.authorized_users.len()));
-        settings.push(format!("Notifications: {}", if tg_config.notifications_enabled { "Enabled" } else { "Disabled" }));
-        settings.push(format!("Alert Threshold: {} SOL", tg_config.alert_threshold_sol));
-        settings.push(String::new());
-        settings.push(format!("Status: {}", app.telegram_status));
+    let content = if let Some(account) = selected_account {
+        let mut lines = vec![
+            Line::from(Span::styled("━━━ SELECTED ACCOUNT ━━━", Style::default().fg(COLOR_PRIMARY).add_modifier(Modifier::BOLD))),
+            Line::from(""),
+        ];
+        
+        // Compact address display with full on hover
+        if state.show_expanded_details {
+            lines.push(Line::from(vec![
+                Span::styled("Address: ", Style::default().fg(COLOR_MUTED)),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("  ", Style::default()),
+                Span::raw(&account.address.to_string()[..32]),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("  ", Style::default()),
+                Span::raw(&account.address.to_string()[32..]),
+            ]));
+        } else {
+            lines.push(Line::from(vec![
+                Span::styled("Address: ", Style::default().fg(COLOR_MUTED)),
+                Span::raw(format!("{}..{}", &account.address.to_string()[..8], &account.address.to_string()[account.address.to_string().len()-8..])),
+                Span::styled(" (E for full)", Style::default().fg(COLOR_MUTED).add_modifier(Modifier::DIM)),
+            ]));
+        }
+        
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("Program:  ", Style::default().fg(COLOR_MUTED)),
+            Span::styled(&account.program, Style::default().fg(COLOR_TEXT)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("Age:      ", Style::default().fg(COLOR_MUTED)),
+            Span::styled(format!("{} days", account.age_days), Style::default().fg(if account.age_days > 30 { COLOR_WARNING } else { COLOR_TEXT })),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("Rent:     ", Style::default().fg(COLOR_MUTED)),
+            Span::styled(format!("{:.6} SOL", account.rent_sol), Style::default().fg(COLOR_SUCCESS).add_modifier(Modifier::BOLD)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("Status:   ", Style::default().fg(COLOR_MUTED)),
+            Span::styled(account.status.display(), Style::default().fg(COLOR_TEXT)),
+        ]));
+        
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled("━━━ ELIGIBILITY ━━━", Style::default().fg(COLOR_INFO).add_modifier(Modifier::BOLD))));
+        
+        // Word wrap eligibility reason
+        let reason_lines = wrap_text(&account.eligibility_reason, 25);
+        for reason_line in reason_lines {
+            lines.push(Line::from(Span::styled(reason_line, Style::default().fg(COLOR_TEXT))));
+        }
+        
+        lines.push(Line::from(""));
+        
+        // Add dry-run results if available
+        if let Some(dry_run) = state.get_selected_dry_run() {
+            lines.push(Line::from(Span::styled("━━━ DRY-RUN RESULTS ━━━", Style::default().fg(COLOR_SUCCESS).add_modifier(Modifier::BOLD))));
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled("Projected:  ", Style::default().fg(COLOR_MUTED)),
+                Span::styled(format!("{:.6} SOL", dry_run.projected_sol), Style::default().fg(COLOR_SUCCESS)),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Fee Est:    ", Style::default().fg(COLOR_MUTED)),
+                Span::styled(format!("{:.6} SOL", dry_run.estimated_fee), Style::default().fg(COLOR_WARNING)),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("━━━━━━━━━━━━━━━━━━━━━━━━", Style::default().fg(COLOR_MUTED)),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Net Gain:   ", Style::default().fg(COLOR_MUTED)),
+                Span::styled(format!("{:.6} SOL", dry_run.net_gain), Style::default().fg(COLOR_SUCCESS).add_modifier(Modifier::BOLD)),
+            ]));
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled("✓ ", Style::default().fg(COLOR_SUCCESS).add_modifier(Modifier::BOLD)),
+                Span::styled("Ready for execution", Style::default().fg(COLOR_TEXT)),
+            ]));
+        } else if account.status == AccountStatus::Eligible {
+            lines.push(Line::from(vec![
+                Span::styled("⚠ ", Style::default().fg(COLOR_WARNING)),
+                Span::styled("Press ", Style::default().fg(COLOR_MUTED)),
+                Span::styled("d", Style::default().fg(COLOR_WARNING).add_modifier(Modifier::BOLD)),
+                Span::styled(" to run dry-run", Style::default().fg(COLOR_MUTED)),
+            ]));
+        }
+        
+        // Safety warnings
+        lines.push(Line::from(""));
+        if account.status == AccountStatus::Whitelisted {
+            lines.push(Line::from(vec![
+                Span::styled("🔒 ", Style::default().fg(COLOR_DANGER)),
+                Span::styled("WHITELISTED", Style::default().fg(COLOR_DANGER).add_modifier(Modifier::BOLD)),
+            ]));
+            lines.push(Line::from(Span::styled("Cannot be reclaimed", Style::default().fg(COLOR_MUTED))));
+        } else if !state.can_execute_selected() && account.status == AccountStatus::Eligible {
+            lines.push(Line::from(vec![
+                Span::styled("⚠ ", Style::default().fg(COLOR_WARNING)),
+                Span::styled("Dry-run required first", Style::default().fg(COLOR_WARNING)),
+            ]));
+        }
+        
+        lines
     } else {
-        settings.push("Not configured".to_string());
-        settings.push("Add [telegram] section to config.toml".to_string());
+        vec![
+            Line::from(""),
+            Line::from(Span::styled("No account selected", Style::default().fg(COLOR_MUTED))),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Use ", Style::default().fg(COLOR_MUTED)),
+                Span::styled("↑↓", Style::default().fg(COLOR_INFO).add_modifier(Modifier::BOLD)),
+                Span::styled(" or ", Style::default().fg(COLOR_MUTED)),
+                Span::styled("j/k", Style::default().fg(COLOR_INFO).add_modifier(Modifier::BOLD)),
+            ]),
+            Line::from(Span::styled("to navigate", Style::default().fg(COLOR_MUTED))),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Mouse scroll ", Style::default().fg(COLOR_MUTED)),
+                Span::styled("enabled", Style::default().fg(COLOR_SUCCESS)),
+            ]),
+        ]
+    };
+    
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(COLOR_BORDER_INACTIVE))
+        .title("🎯 Decision");
+    
+    let paragraph = Paragraph::new(content)
+        .block(block)
+        .wrap(Wrap { trim: true });
+    
+    f.render_widget(paragraph, area);
+}
+
+/// Helper: Wrap text to fit width
+fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut current_line = String::new();
+    
+    for word in text.split_whitespace() {
+        if current_line.len() + word.len() + 1 > max_width {
+            if !current_line.is_empty() {
+                lines.push(current_line);
+                current_line = String::new();
+            }
+        }
+        if !current_line.is_empty() {
+            current_line.push(' ');
+        }
+        current_line.push_str(word);
     }
     
-    let items: Vec<ListItem> = settings.into_iter().map(|s| {
-        let color = if s.starts_with("===") {
-            Color::Cyan
-        } else if s.contains("Enabled") || s.contains("Active") {
-            Color::Green
-        } else if s.contains("Disabled") || s.contains("Not configured") {
-            Color::Yellow
-        } else {
-            Color::White
+    if !current_line.is_empty() {
+        lines.push(current_line);
+    }
+    
+    lines
+}
+
+/// Activity Log: Scrolling list of recent events
+fn render_activity_log<B: Backend>(f: &mut Frame<B>, area: Rect, state: &State) {
+    let items: Vec<ListItem> = state.activity_log.iter().map(|log| {
+        let (icon, color) = match log.level {
+            LogLevel::Info => ("ℹ", COLOR_INFO),
+            LogLevel::Warning => ("⚠", COLOR_WARNING),
+            LogLevel::Error => ("✗", COLOR_DANGER),
+            LogLevel::Success => ("✓", COLOR_SUCCESS),
         };
         
-        ListItem::new(Line::from(Span::styled(s, Style::default().fg(color))))
+        let time_str = log.timestamp.format("%H:%M:%S").to_string();
+        
+        ListItem::new(Line::from(vec![
+            Span::styled(format!("[{}] ", time_str), Style::default().fg(COLOR_MUTED)),
+            Span::styled(format!("{} ", icon), Style::default().fg(color).add_modifier(Modifier::BOLD)),
+            Span::styled(&log.message, Style::default().fg(COLOR_TEXT)),
+        ]))
     }).collect();
     
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title("Configuration (t: Toggle Telegram | T: Test)"));
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(COLOR_BORDER_INACTIVE))
+                .title("📜 Live Audit (last 50 events)")
+        );
+    
     f.render_widget(list, area);
+}
+
+/// Footer: Keyboard legend and treasury address
+fn render_footer<B: Backend>(f: &mut Frame<B>, area: Rect, state: &State) {
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
+        .split(area);
+    
+    // Keyboard legend with grouping
+    let legend = Line::from(vec![
+        // Navigation
+        Span::styled("↑↓", Style::default().fg(COLOR_WARNING).add_modifier(Modifier::BOLD)),
+        Span::styled("/", Style::default().fg(COLOR_MUTED)),
+        Span::styled("jk", Style::default().fg(COLOR_WARNING).add_modifier(Modifier::BOLD)),
+        Span::styled(":Nav ", Style::default().fg(COLOR_MUTED)),
+        
+        Span::styled("│ ", Style::default().fg(COLOR_MUTED)),
+        
+        // Actions
+        Span::styled("s", Style::default().fg(COLOR_SUCCESS).add_modifier(Modifier::BOLD)),
+        Span::styled(":Scan ", Style::default().fg(COLOR_MUTED)),
+        Span::styled("d", Style::default().fg(COLOR_INFO).add_modifier(Modifier::BOLD)),
+        Span::styled(":Dry ", Style::default().fg(COLOR_MUTED)),
+        Span::styled("e", Style::default().fg(COLOR_DANGER).add_modifier(Modifier::BOLD)),
+        Span::styled(":Exec ", Style::default().fg(COLOR_MUTED)),
+        
+        Span::styled("│ ", Style::default().fg(COLOR_MUTED)),
+        
+        // Tools
+        Span::styled("x", Style::default().fg(COLOR_WARNING).add_modifier(Modifier::BOLD)),
+        Span::styled(":Export ", Style::default().fg(COLOR_MUTED)),
+        Span::styled("w", Style::default().fg(COLOR_WARNING).add_modifier(Modifier::BOLD)),
+        Span::styled(":Whitelist ", Style::default().fg(COLOR_MUTED)),
+        
+        Span::styled("│ ", Style::default().fg(COLOR_MUTED)),
+        
+        // Help & Quit
+        Span::styled("?", Style::default().fg(COLOR_INFO).add_modifier(Modifier::BOLD)),
+        Span::styled(":Help ", Style::default().fg(COLOR_MUTED)),
+        Span::styled("q", Style::default().fg(COLOR_DANGER).add_modifier(Modifier::BOLD)),
+        Span::styled(":Quit", Style::default().fg(COLOR_MUTED)),
+    ]);
+    
+    let legend_block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(COLOR_BORDER_INACTIVE));
+    let legend_para = Paragraph::new(legend).block(legend_block);
+    f.render_widget(legend_para, chunks[0]);
+    
+    // Treasury address with visual emphasis
+    let treasury_short = if state.treasury_address.len() >= 14 {
+        format!("{}...{}", &state.treasury_address[..6], &state.treasury_address[state.treasury_address.len()-6..])
+    } else {
+        state.treasury_address.clone()
+    };
+    
+    let treasury = Line::from(vec![
+        Span::styled("💰 ", Style::default().fg(COLOR_WARNING)),
+        Span::styled(treasury_short, Style::default().fg(COLOR_SUCCESS).add_modifier(Modifier::BOLD)),
+    ]);
+    
+    let treasury_block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(COLOR_SUCCESS));
+    let treasury_para = Paragraph::new(treasury).block(treasury_block).alignment(Alignment::Center);
+    f.render_widget(treasury_para, chunks[1]);
+}
+
+/// Help Overlay: Interactive guide
+fn render_help_overlay<B: Backend>(f: &mut Frame<B>, size: Rect) {
+    // Center the help box
+    let area = centered_rect(80, 90, size);
+    
+    // Clear background
+    f.render_widget(Clear, area);
+    
+    let help_text = vec![
+        Line::from(Span::styled("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", Style::default().fg(COLOR_PRIMARY))),
+        Line::from(Span::styled("                    ⚡ KORA NEXUS HELP                    ", Style::default().fg(COLOR_PRIMARY).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", Style::default().fg(COLOR_PRIMARY))),
+        Line::from(""),
+        
+        Line::from(Span::styled("NAVIGATION", Style::default().fg(COLOR_WARNING).add_modifier(Modifier::BOLD | Modifier::UNDERLINED))),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  ↑ / k       ", Style::default().fg(COLOR_SUCCESS).add_modifier(Modifier::BOLD)),
+            Span::styled("Move selection up", Style::default().fg(COLOR_TEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("  ↓ / j       ", Style::default().fg(COLOR_SUCCESS).add_modifier(Modifier::BOLD)),
+            Span::styled("Move selection down", Style::default().fg(COLOR_TEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("  PgUp/PgDn   ", Style::default().fg(COLOR_SUCCESS).add_modifier(Modifier::BOLD)),
+            Span::styled("Jump 10 rows", Style::default().fg(COLOR_TEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("  Mouse Scroll", Style::default().fg(COLOR_SUCCESS).add_modifier(Modifier::BOLD)),
+            Span::styled("Navigate with mouse wheel", Style::default().fg(COLOR_TEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("  E           ", Style::default().fg(COLOR_SUCCESS).add_modifier(Modifier::BOLD)),
+            Span::styled("Expand address details", Style::default().fg(COLOR_TEXT)),
+        ]),
+        Line::from(""),
+        
+        Line::from(Span::styled("CORE OPERATIONS", Style::default().fg(COLOR_WARNING).add_modifier(Modifier::BOLD | Modifier::UNDERLINED))),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  s           ", Style::default().fg(COLOR_SUCCESS).add_modifier(Modifier::BOLD)),
+            Span::styled("Scan for sponsored accounts", Style::default().fg(COLOR_TEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("  d           ", Style::default().fg(COLOR_INFO).add_modifier(Modifier::BOLD)),
+            Span::styled("Dry-run selected account (preview)", Style::default().fg(COLOR_TEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("  e           ", Style::default().fg(COLOR_DANGER).add_modifier(Modifier::BOLD)),
+            Span::styled("Execute reclaim (", Style::default().fg(COLOR_TEXT)),
+            Span::styled("requires dry-run first", Style::default().fg(COLOR_WARNING)),
+            Span::styled(")", Style::default().fg(COLOR_TEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("  x           ", Style::default().fg(COLOR_WARNING).add_modifier(Modifier::BOLD)),
+            Span::styled("Export to CSV (timestamped report)", Style::default().fg(COLOR_TEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("  w           ", Style::default().fg(COLOR_WARNING).add_modifier(Modifier::BOLD)),
+            Span::styled("Whitelist account (protect from reclaim)", Style::default().fg(COLOR_TEXT)),
+        ]),
+        Line::from(""),
+        
+        Line::from(Span::styled("UTILITY", Style::default().fg(COLOR_WARNING).add_modifier(Modifier::BOLD | Modifier::UNDERLINED))),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  r           ", Style::default().fg(COLOR_INFO).add_modifier(Modifier::BOLD)),
+            Span::styled("Refresh stats from database", Style::default().fg(COLOR_TEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("  m           ", Style::default().fg(COLOR_INFO).add_modifier(Modifier::BOLD)),
+            Span::styled("Toggle mode (Monitor/DryRun/Execute)", Style::default().fg(COLOR_TEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("  ?           ", Style::default().fg(COLOR_PRIMARY).add_modifier(Modifier::BOLD)),
+            Span::styled("Show this help (press again to close)", Style::default().fg(COLOR_TEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("  q / ESC     ", Style::default().fg(COLOR_DANGER).add_modifier(Modifier::BOLD)),
+            Span::styled("Quit application", Style::default().fg(COLOR_TEXT)),
+        ]),
+        Line::from(""),
+        
+        Line::from(Span::styled("SAFETY RULES", Style::default().fg(COLOR_DANGER).add_modifier(Modifier::BOLD | Modifier::UNDERLINED))),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  ⚠ ", Style::default().fg(COLOR_WARNING)),
+            Span::styled("Dry-run REQUIRED before execute", Style::default().fg(COLOR_TEXT).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(vec![
+            Span::styled("  🔒 ", Style::default().fg(COLOR_DANGER)),
+            Span::styled("Whitelisted accounts CANNOT be reclaimed", Style::default().fg(COLOR_TEXT).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(vec![
+            Span::styled("  ✓ ", Style::default().fg(COLOR_SUCCESS)),
+            Span::styled("Execute sends real on-chain transaction", Style::default().fg(COLOR_TEXT).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(""),
+        
+        Line::from(Span::styled("STATUS INDICATORS", Style::default().fg(COLOR_WARNING).add_modifier(Modifier::BOLD | Modifier::UNDERLINED))),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  ✓ ELIGIBLE      ", Style::default().fg(COLOR_SUCCESS)),
+            Span::styled("Ready to reclaim (after dry-run)", Style::default().fg(COLOR_TEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("  🔒 WHITELISTED  ", Style::default().fg(COLOR_MUTED)),
+            Span::styled("Protected account", Style::default().fg(COLOR_TEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("  ⟳ PROCESSING   ", Style::default().fg(COLOR_INFO)),
+            Span::styled("Transaction in progress", Style::default().fg(COLOR_TEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("  ✓ RECLAIMED    ", Style::default().fg(COLOR_PRIMARY)),
+            Span::styled("Successfully reclaimed", Style::default().fg(COLOR_TEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("  ✗ FAILED       ", Style::default().fg(COLOR_DANGER)),
+            Span::styled("Operation failed", Style::default().fg(COLOR_TEXT)),
+        ]),
+        Line::from(""),
+        
+        Line::from(Span::styled("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", Style::default().fg(COLOR_PRIMARY))),
+        Line::from(vec![
+            Span::styled("Press ", Style::default().fg(COLOR_MUTED)),
+            Span::styled("?", Style::default().fg(COLOR_INFO).add_modifier(Modifier::BOLD)),
+            Span::styled(" or ", Style::default().fg(COLOR_MUTED)),
+            Span::styled("ESC", Style::default().fg(COLOR_INFO).add_modifier(Modifier::BOLD)),
+            Span::styled(" to close this help", Style::default().fg(COLOR_MUTED)),
+        ]),
+        Line::from(Span::styled("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", Style::default().fg(COLOR_PRIMARY))),
+    ];
+    
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Double)
+        .border_style(Style::default().fg(COLOR_PRIMARY).add_modifier(Modifier::BOLD))
+        .style(Style::default().bg(Color::Black));
+    
+    let paragraph = Paragraph::new(help_text)
+        .block(block)
+        .wrap(Wrap { trim: false });
+    
+    f.render_widget(paragraph, area);
+}
+
+/// Helper: Create a centered rectangle
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
 }
