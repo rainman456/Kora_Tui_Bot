@@ -14,12 +14,12 @@ use crate::config::Config;
 
 mod state;
 mod event;
-mod tasks;
+mod task;
 mod ui;
 
 use state::State;
 use event::{EventLoop, Event, Command};
-use tasks::TaskManager;
+use task::TaskManager;
 
 /// Run the TUI application
 pub async fn run_tui(config: Config) -> Result<()> {

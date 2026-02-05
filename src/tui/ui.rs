@@ -1,5 +1,4 @@
 use ratatui::{
-    backend::Backend,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -22,7 +21,7 @@ const COLOR_BORDER_ACTIVE: Color = Color::Cyan;
 const COLOR_BORDER_INACTIVE: Color = Color::DarkGray;
 
 /// Render the complete Nexus layout
-pub fn render<B: Backend>(f: &mut Frame<B>, state: &State) {
+pub fn render(f: &mut Frame, state: &State) {
     let size = f.size();
     
     // Main layout structure
@@ -50,7 +49,7 @@ pub fn render<B: Backend>(f: &mut Frame<B>, state: &State) {
 }
 
 /// Header: Network, Node, Mode, RPC Health
-fn render_header<B: Backend>(f: &mut Frame<B>, area: Rect, state: &State) {
+fn render_header(f: &mut Frame, area: Rect, state: &State) {
     let health_color = match state.rpc_health.status {
         HealthStatus::Healthy => COLOR_SUCCESS,
         HealthStatus::Degraded => COLOR_WARNING,
@@ -110,7 +109,7 @@ fn render_header<B: Backend>(f: &mut Frame<B>, area: Rect, state: &State) {
 }
 
 /// Summary Bar: 5 overview cards
-fn render_summary_bar<B: Backend>(f: &mut Frame<B>, area: Rect, state: &State) {
+fn render_summary_bar(f: &mut Frame, area: Rect, state: &State) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(20); 5])
@@ -124,11 +123,11 @@ fn render_summary_bar<B: Backend>(f: &mut Frame<B>, area: Rect, state: &State) {
     };
     
     let cards = [
-        ("📊 TOTAL", state.total_accounts.to_string(), "", COLOR_PRIMARY, COLOR_MUTED),
-        ("🔒 LOCKED", format!("{:.4} SOL", state.total_locked_sol), "", COLOR_WARNING, COLOR_MUTED),
+        ("📊 TOTAL", state.total_accounts.to_string(), "".to_string(), COLOR_PRIMARY, COLOR_MUTED),
+        ("🔒 LOCKED", format!("{:.4} SOL", state.total_locked_sol), "".to_string(), COLOR_WARNING, COLOR_MUTED),
         ("✓ ELIGIBLE", state.eligible_accounts.to_string(), format!("{}%", eligible_pct), COLOR_SUCCESS, COLOR_SUCCESS),
-        ("💰 RECLAIMED", format!("{:.4} SOL", state.total_reclaimed_sol), "", COLOR_SUCCESS, COLOR_SUCCESS),
-        ("⚠ AT-RISK", format!("{:.4} SOL", state.at_risk_sol), ">30d", COLOR_DANGER, COLOR_DANGER),
+        ("💰 RECLAIMED", format!("{:.4} SOL", state.total_reclaimed_sol), "".to_string(), COLOR_SUCCESS, COLOR_SUCCESS),
+        ("⚠ AT-RISK", format!("{:.4} SOL", state.at_risk_sol), ">30d".to_string(), COLOR_DANGER, COLOR_DANGER),
     ];
     
     for (i, (label, value, subtitle, fg_color, border_color)) in cards.iter().enumerate() {
@@ -155,7 +154,7 @@ fn render_summary_bar<B: Backend>(f: &mut Frame<B>, area: Rect, state: &State) {
 }
 
 /// Main Workspace: Monitor table (70%) + Decision panel (30%)
-fn render_workspace<B: Backend>(f: &mut Frame<B>, area: Rect, state: &State) {
+fn render_workspace(f: &mut Frame, area: Rect, state: &State) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
@@ -166,7 +165,7 @@ fn render_workspace<B: Backend>(f: &mut Frame<B>, area: Rect, state: &State) {
 }
 
 /// Monitor Table: Account list with selection
-fn render_monitor_table<B: Backend>(f: &mut Frame<B>, area: Rect, state: &State) {
+fn render_monitor_table(f: &mut Frame, area: Rect, state: &State) {
     let header = Row::new(vec![
         Cell::from("Address"),
         Cell::from("Program"),
@@ -294,7 +293,7 @@ fn render_monitor_table<B: Backend>(f: &mut Frame<B>, area: Rect, state: &State)
 }
 
 /// Decision Panel: Contextual information for selected account
-fn render_decision_panel<B: Backend>(f: &mut Frame<B>, area: Rect, state: &State) {
+fn render_decision_panel(f: &mut Frame, area: Rect, state: &State) {
     let selected_account = state.get_selected_account();
     
     let content = if let Some(account) = selected_account {
@@ -310,11 +309,11 @@ fn render_decision_panel<B: Backend>(f: &mut Frame<B>, area: Rect, state: &State
             ]));
             lines.push(Line::from(vec![
                 Span::styled("  ", Style::default()),
-                Span::raw(&account.address.to_string()[..32]),
+                Span::raw(account.address.to_string()[..32].to_string()),
             ]));
             lines.push(Line::from(vec![
                 Span::styled("  ", Style::default()),
-                Span::raw(&account.address.to_string()[32..]),
+                Span::raw(account.address.to_string()[32..].to_string()),
             ]));
         } else {
             lines.push(Line::from(vec![
@@ -461,7 +460,7 @@ fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
 }
 
 /// Activity Log: Scrolling list of recent events
-fn render_activity_log<B: Backend>(f: &mut Frame<B>, area: Rect, state: &State) {
+fn render_activity_log(f: &mut Frame, area: Rect, state: &State) {
     let items: Vec<ListItem> = state.activity_log.iter().map(|log| {
         let (icon, color) = match log.level {
             LogLevel::Info => ("ℹ", COLOR_INFO),
@@ -492,7 +491,7 @@ fn render_activity_log<B: Backend>(f: &mut Frame<B>, area: Rect, state: &State) 
 }
 
 /// Footer: Keyboard legend and treasury address
-fn render_footer<B: Backend>(f: &mut Frame<B>, area: Rect, state: &State) {
+fn render_footer(f: &mut Frame, area: Rect, state: &State) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
@@ -561,7 +560,7 @@ fn render_footer<B: Backend>(f: &mut Frame<B>, area: Rect, state: &State) {
 }
 
 /// Help Overlay: Interactive guide
-fn render_help_overlay<B: Backend>(f: &mut Frame<B>, size: Rect) {
+fn render_help_overlay(f: &mut Frame, size: Rect) {
     // Center the help box
     let area = centered_rect(80, 90, size);
     

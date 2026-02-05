@@ -35,7 +35,7 @@ async fn main() {
     let result = match cli.command {
        Commands::Tui => {
      info!("Launching Nexus TUI...");
-    tui::run_tui(config).await
+    tui::run_tui(config).await.map_err(|e| e.into())
 }
 
         Commands::Scan {
@@ -120,7 +120,7 @@ async fn main() {
 
 async fn run_tui(config: Config) -> error::Result<()> {
     info!("Launching TUI...");
-    tui::run_tui(config).await
+    tui::run_tui(config).await.map_err(|e| e.into())
 }
 
 async fn scan_accounts(
