@@ -24,11 +24,11 @@ use task::TaskManager;
 /// Run the TUI application
 pub async fn run_tui(config: Config) -> Result<()> {
     // Initialize logging to file instead of stdout
-    let log_file = std::fs::File::create("nexus.log")?;
-    tracing_subscriber::fmt()
-        .with_writer(std::sync::Arc::new(log_file))
-        .with_ansi(false)
-        .init();
+    // let log_file = std::fs::File::create("nexus.log")?;
+    // tracing_subscriber::fmt()
+    //     .with_writer(std::sync::Arc::new(log_file))
+    //     .with_ansi(false)
+    //     .init();
     
     // Setup terminal with mouse support
     enable_raw_mode()?;
