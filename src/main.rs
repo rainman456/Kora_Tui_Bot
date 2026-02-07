@@ -494,8 +494,11 @@ async fn reclaim_account(
     // Check eligibility
     let eligibility_checker = reclaim::EligibilityChecker::new(rpc_client.clone(), config.clone());
 
-    // Get account info to determine creation time (use current time as fallback)
-    let created_at = chrono::Utc::now() - chrono::Duration::days(365); // Assume old enough
+    let created_at = if let Ok(Some(db_account)) = db.get_account_by_pubkey(pubkey) {
+        db_account.created_at
+    } else {
+        chrono::Utc::now()
+    };
 
     let reason = eligibility_checker
         .get_eligibility_reason(&account_pubkey, created_at)
@@ -536,8 +539,7 @@ async fn reclaim_account(
         dry_run || config.reclaim.dry_run,
     );
 
-    // Determine account type - Default to SplToken since System accounts can't be reclaimed
-    let account_type = kora::AccountType::SplToken;
+    let account_type = engine.determine_account_type(&account_pubkey).await?;
 
     // Reclaim
     let result = engine
@@ -747,18 +749,24 @@ async fn run_auto_service(config: &Config, interval: u64, dry_run: bool) -> erro
                 Err(e) => warn!("Failed to batch save accounts: {}", e),
             }
 
-            // ✅ Update checkpoint with latest signature
-            if let Some(latest_account) = sponsored_accounts.first() {
-                let _ = db
-                    .save_last_processed_signature(&latest_account.creation_signature.to_string());
-                let _ = db.save_last_processed_slot(latest_account.creation_slot);
+        // ✅ Update checkpoint with latest signature
+        if let Some(latest_account) = sponsored_accounts.first() {
+            if let Err(e) = db
+                .save_last_processed_signature(&latest_account.creation_signature.to_string())
+            {
+                warn!("Failed to save signature checkpoint: {}", e);
+            }
+            if let Err(e) = db.save_last_processed_slot(latest_account.creation_slot) {
+                warn!("Failed to save slot checkpoint: {}", e);
             }
         }
+    }
 
-        // Check eligibility
-        let eligibility_checker =
-            reclaim::EligibilityChecker::new(rpc_client.clone(), config.clone());
-        let mut eligible = Vec::new();
+    // Check eligibility
+    let eligibility_checker =
+        reclaim::EligibilityChecker::new(rpc_client.clone(), config.clone());
+    let mut eligible = Vec::new();
+    let mut seen_pubkeys = std::collections::HashSet::new();
 
         for account_info in &sponsored_accounts {
             // ✅ Check if account already exists to avoid re-processing
@@ -773,13 +781,58 @@ async fn run_auto_service(config: &Config, interval: u64, dry_run: bool) -> erro
                 }
             }
 
+        if let Ok(true) = eligibility_checker
+            .is_eligible(&account_info.pubkey, account_info.created_at)
+            .await
+        {
+            seen_pubkeys.insert(account_info.pubkey);
+            eligible.push((account_info.pubkey, account_info.account_type.clone()));
+        }
+    }
+
+    // Also re-evaluate previously tracked active accounts
+    if let Ok(active_accounts) = db.get_active_accounts() {
+        for account in active_accounts {
+            let pubkey = match account.pubkey.parse::<solana_sdk::pubkey::Pubkey>() {
+                Ok(pk) => pk,
+                Err(e) => {
+                    warn!("Invalid pubkey in database {}: {}", account.pubkey, e);
+                    continue;
+                }
+            };
+
+            if seen_pubkeys.contains(&pubkey) {
+                continue;
+            }
+
+            match rpc_client.is_account_active(&pubkey).await {
+                Ok(false) => {
+                    if let Err(e) = db.update_account_status(
+                        &account.pubkey,
+                        storage::models::AccountStatus::Closed,
+                    ) {
+                        warn!("Failed to update closed status for {}: {}", account.pubkey, e);
+                    }
+                    continue;
+                }
+                Err(e) => {
+                    warn!("Failed to check active status for {}: {}", account.pubkey, e);
+                    continue;
+                }
+                _ => {}
+            }
+
             if let Ok(true) = eligibility_checker
-                .is_eligible(&account_info.pubkey, account_info.created_at)
+                .is_eligible(&pubkey, account.created_at)
                 .await
             {
-                eligible.push((account_info.pubkey, account_info.account_type.clone()));
+                match eligibility_checker.get_account_type(&pubkey).await {
+                    Ok(account_type) => eligible.push((pubkey, account_type)),
+                    Err(e) => warn!("Failed to determine account type for {}: {}", pubkey, e),
+                }
             }
         }
+    }
 
         // Notify scan complete
         if let Some(ref n) = notifier {

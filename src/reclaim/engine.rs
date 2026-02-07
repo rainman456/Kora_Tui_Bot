@@ -42,6 +42,29 @@ impl ReclaimEngine {
             dry_run,
         }
     }
+
+    /// Determine account type from on-chain account data.
+    pub async fn determine_account_type(&self, pubkey: &Pubkey) -> Result<AccountType> {
+        let account = self.rpc_client.get_account(pubkey).await?;
+        let account = account.ok_or_else(|| {
+            crate::error::ReclaimError::AccountNotFound(format!(
+                "Account {} does not exist",
+                pubkey
+            ))
+        })?;
+
+        if account.owner == spl_token::id() {
+            match account.data.len() {
+                165 => Ok(AccountType::SplToken),
+                82 => Ok(AccountType::SplMint),
+                _ => Ok(AccountType::Other(account.owner)),
+            }
+        } else if account.owner == solana_sdk::system_program::id() {
+            Ok(AccountType::System)
+        } else {
+            Ok(AccountType::Other(account.owner))
+        }
+    }
     
     /// Reclaim rent from an account
     /// 

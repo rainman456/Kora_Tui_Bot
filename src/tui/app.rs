@@ -296,7 +296,7 @@ impl App {
             .map_err(|e| crate::error::ReclaimError::Config(e.to_string()))?;
         
         let engine = self.reclaim_engine.as_ref().unwrap();
-        let account_type = crate::kora::AccountType::SplToken;
+        let account_type = engine.determine_account_type(&pubkey).await?;
         
         match engine.reclaim_account(&pubkey, &account_type).await {
             Ok(result) => {
@@ -374,12 +374,17 @@ impl App {
             self.config.reclaim.batch_delay_ms
         );
         
-        let eligible_list: Vec<_> = eligible.iter()
-            .filter_map(|a| {
-                Pubkey::try_from(a.pubkey.as_str()).ok()
-                    .map(|pk| (pk, crate::kora::AccountType::SplToken))
-            })
-            .collect();
+        let mut eligible_list = Vec::new();
+        for account in &eligible {
+            if let Ok(pk) = Pubkey::try_from(account.pubkey.as_str()) {
+                match engine.determine_account_type(&pk).await {
+                    Ok(account_type) => eligible_list.push((pk, account_type)),
+                    Err(e) => {
+                        self.add_log(&format!("✗ Failed to determine account type: {}", e));
+                    }
+                }
+            }
+        }
         
         match batch.reclaim_all_eligible(eligible_list).await {
             Ok(summary) => {

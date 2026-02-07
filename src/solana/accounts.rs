@@ -414,6 +414,32 @@ impl AccountDiscovery {
                         }
                     }
                     
+                    // Check for SPL Token InitializeMint (not reclaimable, but tracked as SplMint for classification)
+                    if program == "spl-token" {
+                        if let Some(parsed_info) = parsed_value.as_object() {
+                            let type_option: Option<&str> = parsed_info.get("type").and_then(|v| v.as_str());
+                            if let Some(info_type) = type_option {
+                                if info_type == "initializeMint" || info_type == "initializeMint2" {
+                                    if let Some(info) = parsed_info.get("info").and_then(|v| v.as_object()) {
+                                        if let Some(mint_str) = info.get("mint").and_then(|v| v.as_str()) {
+                                            let mint = Pubkey::from_str(mint_str)?;
+                                            debug!("✓ Found token mint initialization: {}", mint);
+                                            return Ok(Some(SponsoredAccountInfo {
+                                                pubkey: mint,
+                                                creation_signature: signature,
+                                                creation_slot: slot,
+                                                creation_time,
+                                                initial_balance: info.get("lamports").and_then(|v| v.as_u64()).unwrap_or(0),
+                                                data_size: 82,
+                                                account_type: AccountType::SplMint,
+                                            }));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // Check for SPL Token InitializeAccount (less common, but still valid)
                     if program == "spl-token" {
                         if let Some(parsed_info) = parsed_value.as_object() {

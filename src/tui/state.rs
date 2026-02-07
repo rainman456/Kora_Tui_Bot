@@ -299,7 +299,12 @@ impl State {
                 
                 self.add_log(
                     LogLevel::Success,
-                    &format!("✓ Reclaimed {:.4} SOL (sig: {}...)", result.amount_sol, &result.signature[..8])
+                    &format!(
+                        "✓ Reclaimed {:.4} SOL (sig: {}...) at {}",
+                        result.amount_sol,
+                        &result.signature[..8],
+                        result.timestamp.format("%H:%M:%S")
+                    )
                 );
             }
             

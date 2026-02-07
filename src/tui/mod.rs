@@ -87,7 +87,6 @@ pub async fn run_tui(config: Config) -> Result<()> {
         eligibility_checker,
         reclaim_engine,
         db,
-        config.clone(),
     );
     
     // Start RPC health monitoring
@@ -154,8 +153,12 @@ async fn run_event_loop(
                     }
                 }
                 
-                Event::Resize(_, _) => {
-                    // Terminal will automatically redraw
+                Event::Resize(width, height) => {
+                    state.apply(state::Action::Log(state::LogEntry {
+                        timestamp: chrono::Utc::now(),
+                        level: state::LogLevel::Warning,
+                        message: format!("Terminal resized to {}x{}", width, height),
+                    }));
                 }
                 
                 Event::Action(action) => {

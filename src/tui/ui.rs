@@ -84,6 +84,13 @@ fn render_header(f: &mut Frame, area: Rect, state: &State) {
             format!("{}ms", state.rpc_health.latency_ms),
             Style::default().fg(health_color).add_modifier(Modifier::BOLD)
         ),
+        Span::styled(" ", Style::default().fg(COLOR_MUTED)),
+        Span::styled(state.rpc_health.status.display(), Style::default().fg(health_color)),
+        Span::styled(" @ ", Style::default().fg(COLOR_MUTED)),
+        Span::styled(
+            state.rpc_health.last_check.format("%H:%M:%S").to_string(),
+            Style::default().fg(COLOR_MUTED)
+        ),
         Span::styled(" │ ", Style::default().fg(COLOR_MUTED)),
         Span::styled("? ", Style::default().fg(COLOR_INFO)),
         Span::styled("Help", Style::default().fg(COLOR_MUTED)),
@@ -373,6 +380,10 @@ fn render_decision_panel(f: &mut Frame, area: Rect, state: &State) {
                 Span::styled("Net Gain:   ", Style::default().fg(COLOR_MUTED)),
                 Span::styled(format!("{:.6} SOL", dry_run.net_gain), Style::default().fg(COLOR_SUCCESS).add_modifier(Modifier::BOLD)),
             ]));
+            lines.push(Line::from(vec![
+                Span::styled("Checked:   ", Style::default().fg(COLOR_MUTED)),
+                Span::styled(dry_run.timestamp.format("%Y-%m-%d %H:%M:%S").to_string(), Style::default().fg(COLOR_TEXT)),
+            ]));
             lines.push(Line::from(""));
             lines.push(Line::from(vec![
                 Span::styled("✓ ", Style::default().fg(COLOR_SUCCESS).add_modifier(Modifier::BOLD)),
@@ -463,7 +474,7 @@ fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
 
 /// Activity Log: Scrolling list of recent events
 fn render_activity_log(f: &mut Frame, area: Rect, state: &State) {
-    let items: Vec<ListItem> = state.activity_log.iter().map(|log| {
+    let items: Vec<ListItem> = state.activity_log.iter().skip(state.scroll_offset).map(|log| {
         let (icon, color) = match log.level {
             LogLevel::Info => ("ℹ", COLOR_INFO),
             LogLevel::Warning => ("⚠", COLOR_WARNING),

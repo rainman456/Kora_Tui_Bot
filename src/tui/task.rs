@@ -7,14 +7,13 @@ use std::fs::File;
 use csv::Writer;
 
 use crate::{
-    config::Config,
     solana::SolanaRpcClient,
-    kora::{KoraMonitor, AccountType},
+    kora::KoraMonitor,
     reclaim::{EligibilityChecker, ReclaimEngine},
     storage::Database,
 };
 
-use super::state::{Action, AccountEntry, AccountStatus, DryRunResult, ReclaimResult, LogEntry, LogLevel, RpcHealth, HealthStatus};
+use super::state::{Action, AccountEntry, AccountStatus, DryRunResult, ReclaimResult, RpcHealth, HealthStatus};
 
 /// Background task manager for async operations
 pub struct TaskManager {
@@ -23,7 +22,6 @@ pub struct TaskManager {
     eligibility_checker: EligibilityChecker,
     reclaim_engine: Option<ReclaimEngine>,
     db: Database,
-    config: Config,
     rate_limiter: Arc<Semaphore>,
 }
 
@@ -34,8 +32,7 @@ impl TaskManager {
         eligibility_checker: EligibilityChecker,
         reclaim_engine: Option<ReclaimEngine>,
         db: Database,
-        config: Config,
-    ) -> Self {
+        ) -> Self {
         // Rate limiter: max 10 concurrent RPC calls
         let rate_limiter = Arc::new(Semaphore::new(10));
         
@@ -45,7 +42,6 @@ impl TaskManager {
             eligibility_checker,
             reclaim_engine,
             db,
-            config,
             rate_limiter,
         }
     }
@@ -55,13 +51,12 @@ impl TaskManager {
         let monitor = self.monitor.clone();
         let eligibility_checker = self.eligibility_checker.clone();
         let rpc_client = self.rpc_client.clone();
-        let config = self.config.clone();
         let rate_limiter = self.rate_limiter.clone();
         
         tokio::spawn(async move {
             let _ = action_tx.send(Action::ScanStarted);
             
-            match Self::scan_accounts(monitor, eligibility_checker, rpc_client, config, rate_limiter, max_transactions, action_tx.clone()).await {
+            match Self::scan_accounts(monitor, eligibility_checker, rpc_client, rate_limiter, max_transactions, action_tx.clone()).await {
                 Ok((total, eligible)) => {
                     let _ = action_tx.send(Action::ScanFinished { total, eligible });
                 }
@@ -76,7 +71,6 @@ impl TaskManager {
         monitor: KoraMonitor,
         eligibility_checker: EligibilityChecker,
         rpc_client: SolanaRpcClient,
-        config: Config,
         rate_limiter: Arc<Semaphore>,
         max_transactions: usize,
         action_tx: UnboundedSender<Action>,
@@ -129,11 +123,16 @@ impl TaskManager {
             } else {
                 AccountStatus::Active
             };
+
+            let program_label = if account_info.account_type.is_reclaimable() {
+                format!("{} (reclaimable)", account_info.account_type.description())
+            } else {
+                account_info.account_type.description().to_string()
+            };
             
             let entry = AccountEntry {
                 address: account_info.pubkey,
-                program: account_info.account_type.to_string(),
-                //program: format!("{:?}", account_info.account_type),
+                program: program_label,
                 age_days,
                 rent_sol,
                 last_tx: account_info.created_at,
@@ -190,8 +189,7 @@ impl TaskManager {
         
         let pubkey = account.parse()?;
         
-        // Perform dry-run (account type will be determined by the engine)
-        let account_type = AccountType::SplToken; // Default assumption
+        let account_type = reclaim_engine.determine_account_type(&pubkey).await?;
         let result = reclaim_engine.reclaim_account(&pubkey, &account_type).await?;
         
         let rent_sol = result.amount_reclaimed as f64 / 1_000_000_000.0;
@@ -249,7 +247,7 @@ impl TaskManager {
         let _permit = rate_limiter.acquire().await?;
         
         let pubkey = account.parse()?;
-        let account_type = AccountType::SplToken;
+        let account_type = reclaim_engine.determine_account_type(&pubkey).await?;
         
         let result = reclaim_engine.reclaim_account(&pubkey, &account_type).await?;
         

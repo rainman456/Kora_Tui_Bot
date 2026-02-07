@@ -1,2 +1,5 @@
 kora-reclaim-prototype
 hold
+textfile.tx
+*.backup
+*.patch

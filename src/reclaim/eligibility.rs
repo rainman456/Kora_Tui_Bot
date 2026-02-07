@@ -143,6 +143,15 @@ if account.is_none() {
             AccountType::Other(account.owner)
         }
     }
+
+    /// Determine account type directly from on-chain data for a pubkey.
+    pub async fn get_account_type(&self, pubkey: &Pubkey) -> Result<AccountType> {
+        let account = self.rpc_client.get_account(pubkey).await?;
+        let account = account.ok_or_else(|| {
+            ReclaimError::AccountNotFound(format!("Account {} does not exist", pubkey))
+        })?;
+        Ok(self.determine_account_type(&account))
+    }
     
     fn is_reclaimable_type(&self, account_type: &AccountType) -> bool {
         match account_type {
