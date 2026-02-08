@@ -135,14 +135,14 @@ async fn run_event_loop(
                     // Just render on tick
                 }
                 
-                Event::Key(code, modifiers) => {
+                Event::Key(key_event) => {
                     // Special handling for help overlay
-                    if state.show_help && (code == KeyCode::Esc || code == KeyCode::Char('?')) {
+                    if state.show_help && (key_event.code == KeyCode::Esc || key_event.code == KeyCode::Char('?')) {
                         state.show_help = false;
                         continue;
                     }
                     
-                    if let Some(command) = Command::from_key(code, modifiers) {
+                    if let Some(command) = Command::from_key(key_event) {
                         should_quit = handle_command(command, state, task_manager, event_loop).await?;
                     }
                 }

@@ -1,6 +1,14 @@
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use std::time::Duration;
-use crossterm::event::{self, Event as CrosstermEvent, KeyCode, KeyModifiers, MouseEventKind};
+use crossterm::event::{
+    self,
+    Event as CrosstermEvent,
+    KeyCode,
+    KeyEvent,
+    KeyEventKind,
+    KeyModifiers,
+    MouseEventKind,
+};
 
 use super::state::Action;
 
@@ -10,7 +18,7 @@ pub enum Event {
     /// Terminal tick (for rendering)
     Tick,
     /// Key press
-    Key(KeyCode, KeyModifiers),
+    Key(KeyEvent),
     /// Mouse event
     Mouse(MouseEventKind, u16, u16),
     /// Terminal resize
@@ -38,7 +46,7 @@ impl EventLoop {
                 if event::poll(Duration::from_millis(33)).unwrap_or(false) {
                     match event::read() {
                         Ok(CrosstermEvent::Key(key_event)) => {
-                            let _ = event_tx.send(Event::Key(key_event.code, key_event.modifiers));
+                            let _ = event_tx.send(Event::Key(key_event));
                         }
                         Ok(CrosstermEvent::Mouse(mouse_event)) => {
                             let _ = event_tx.send(Event::Mouse(mouse_event.kind, mouse_event.column, mouse_event.row));
@@ -103,7 +111,14 @@ pub enum Command {
 }
 
 impl Command {
-    pub fn from_key(code: KeyCode, modifiers: KeyModifiers) -> Option<Self> {
+    pub fn from_key(key_event: KeyEvent) -> Option<Self> {
+        if key_event.kind != KeyEventKind::Press {
+            return None;
+        }
+
+        let code = key_event.code;
+        let modifiers = key_event.modifiers;
+
         // Ctrl+C always quits
         if modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('c') {
             return Some(Self::Quit);
@@ -111,13 +126,13 @@ impl Command {
         
         match code {
             KeyCode::Char('q') | KeyCode::Esc => Some(Self::Quit),
-            KeyCode::Char('s') => Some(Self::Scan),
-            KeyCode::Char('d') => Some(Self::DryRun),
+            KeyCode::Char('s') | KeyCode::Char('S') => Some(Self::Scan),
+            KeyCode::Char('d') | KeyCode::Char('D') => Some(Self::DryRun),
             KeyCode::Char('e') => Some(Self::Execute),
-            KeyCode::Char('x') => Some(Self::Export),
-            KeyCode::Char('w') => Some(Self::Whitelist),
-            KeyCode::Char('r') => Some(Self::Refresh),
-            KeyCode::Char('m') => Some(Self::ToggleMode),
+            KeyCode::Char('x') | KeyCode::Char('X') => Some(Self::Export),
+            KeyCode::Char('w') | KeyCode::Char('W') => Some(Self::Whitelist),
+            KeyCode::Char('r') | KeyCode::Char('R') => Some(Self::Refresh),
+            KeyCode::Char('m') | KeyCode::Char('M') => Some(Self::ToggleMode),
             KeyCode::Char('?') => Some(Self::ToggleHelp),
             KeyCode::Char('E') => Some(Self::ToggleExpanded),
             KeyCode::Up | KeyCode::Char('k') => Some(Self::NavigateUp),
