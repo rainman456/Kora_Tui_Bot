@@ -18,11 +18,22 @@ use tracing::{debug, error, info, warn};
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter("kora_reclaim=debug,info")
-        .init();
-
     let cli = Cli::parse();
+    let log_file = if matches!(cli.command, Commands::Tui) {
+        std::fs::File::create("tui.log").ok()
+    } else {
+        None
+    };
+
+    let subscriber = tracing_subscriber::fmt()
+        .with_env_filter("kora_reclaim=debug,info")
+        .with_ansi(false);
+
+    if let Some(file) = log_file {
+        let _ = subscriber.with_writer(std::sync::Arc::new(file)).try_init();
+    } else {
+        let _ = subscriber.try_init();
+    }
 
     let config = match Config::load() {
         Ok(cfg) => cfg,

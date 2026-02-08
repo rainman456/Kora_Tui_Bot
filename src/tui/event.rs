@@ -78,6 +78,7 @@ impl EventLoop {
     /// Receive the next event
     pub async fn next(&mut self) -> Option<Event> {
         tokio::select! {
+            biased;
             // Priority to actions from background tasks
             action = self.action_rx.recv() => {
                 action.map(Event::Action)
