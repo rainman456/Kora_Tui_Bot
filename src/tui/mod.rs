@@ -213,9 +213,15 @@ async fn handle_command(
         Command::Scan => {
             if !state.is_scanning {
                 debug!("Starting scan with max_txns={}", max_txns);
+                state.apply(state::Action::ScanStarted);
                 task_manager.spawn_scan(action_tx, max_txns);
             } else {
                 debug!("Scan request ignored: scan already in progress");
+                state.apply(state::Action::Log(state::LogEntry {
+                    timestamp: chrono::Utc::now(),
+                    level: state::LogLevel::Warning,
+                    message: "Scan already in progress".to_string(),
+                }));
             }
         }
         
