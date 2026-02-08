@@ -67,6 +67,8 @@ pub struct ReclaimConfig {
     pub min_inactive_days: u64,
     #[serde(default)]
     pub auto_reclaim_enabled: bool,
+    #[serde(default = "default_scan_max_transactions")]
+    pub scan_max_transactions: usize,
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
     #[serde(default = "default_batch_delay")]
@@ -83,6 +85,10 @@ pub struct ReclaimConfig {
 
 fn default_batch_size() -> usize {
     10
+}
+
+fn default_scan_max_transactions() -> usize {
+    5000
 }
 
 fn default_batch_delay() -> u64 {

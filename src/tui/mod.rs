@@ -9,6 +9,7 @@ use ratatui::{
     backend::CrosstermBackend,
     Terminal,
 };
+use tracing::debug;
 
 use crate::config::Config;
 
@@ -23,6 +24,7 @@ use task::TaskManager;
 
 /// Run the TUI application
 pub async fn run_tui(config: Config) -> Result<()> {
+    debug!("Initializing TUI");
     // Initialize logging to file instead of stdout
     // let log_file = std::fs::File::create("nexus.log")?;
     // tracing_subscriber::fmt()
@@ -48,6 +50,7 @@ pub async fn run_tui(config: Config) -> Result<()> {
     
     let mut state = State::new(network, treasury);
     let mut event_loop = EventLoop::new();
+    let max_txns = config.reclaim.scan_max_transactions;
     
     // Initialize backend components
     let rpc_client = crate::solana::SolanaRpcClient::new(
@@ -101,7 +104,14 @@ pub async fn run_tui(config: Config) -> Result<()> {
     }
     
     // Main event loop
-    let result = run_event_loop(&mut terminal, &mut state, &mut event_loop, &task_manager).await;
+    let result = run_event_loop(
+        &mut terminal,
+        &mut state,
+        &mut event_loop,
+        &task_manager,
+        max_txns,
+    )
+    .await;
     
     // Restore terminal
     disable_raw_mode()?;
@@ -121,6 +131,7 @@ async fn run_event_loop(
     state: &mut State,
     event_loop: &mut EventLoop,
     task_manager: &TaskManager,
+    max_txns: usize,
 ) -> Result<()> {
     let mut should_quit = false;
     
@@ -136,6 +147,7 @@ async fn run_event_loop(
                 }
                 
                 Event::Key(key_event) => {
+                    debug!("Received key event: {:?}", key_event);
                     // Special handling for help overlay
                     if state.show_help && (key_event.code == KeyCode::Esc || key_event.code == KeyCode::Char('?')) {
                         state.show_help = false;
@@ -143,17 +155,20 @@ async fn run_event_loop(
                     }
                     
                     if let Some(command) = Command::from_key(key_event) {
-                        should_quit = handle_command(command, state, task_manager, event_loop).await?;
+                        debug!("Dispatching command: {:?}", command);
+                        should_quit = handle_command(command, state, task_manager, event_loop, max_txns).await?;
                     }
                 }
                 
                 Event::Mouse(kind, _x, _y) => {
                     if let Some(command) = Command::from_mouse(kind) {
-                        should_quit = handle_command(command, state, task_manager, event_loop).await?;
+                        debug!("Dispatching mouse command: {:?}", command);
+                        should_quit = handle_command(command, state, task_manager, event_loop, max_txns).await?;
                     }
                 }
                 
                 Event::Resize(width, height) => {
+                    debug!("Terminal resize: {}x{}", width, height);
                     state.apply(state::Action::Log(state::LogEntry {
                         timestamp: chrono::Utc::now(),
                         level: state::LogLevel::Warning,
@@ -178,6 +193,7 @@ async fn handle_command(
     state: &mut State,
     task_manager: &TaskManager,
     event_loop: &mut EventLoop,
+    max_txns: usize,
 ) -> Result<bool> {
     let action_tx = event_loop.get_action_sender();
     
@@ -196,8 +212,10 @@ async fn handle_command(
         
         Command::Scan => {
             if !state.is_scanning {
-                let max_txns = 5000;
+                debug!("Starting scan with max_txns={}", max_txns);
                 task_manager.spawn_scan(action_tx, max_txns);
+            } else {
+                debug!("Scan request ignored: scan already in progress");
             }
         }
         

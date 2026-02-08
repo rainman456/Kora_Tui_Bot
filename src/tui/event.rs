@@ -91,6 +91,7 @@ impl EventLoop {
 }
 
 /// Command dispatcher for keyboard inputs
+#[derive(Debug)]
 pub enum Command {
     Quit,
     Scan,
@@ -112,7 +113,7 @@ pub enum Command {
 
 impl Command {
     pub fn from_key(key_event: KeyEvent) -> Option<Self> {
-        if key_event.kind != KeyEventKind::Press {
+        if key_event.kind != KeyEventKind::Press && key_event.kind != KeyEventKind::Repeat {
             return None;
         }
 

@@ -5,6 +5,7 @@ use anyhow::Result;
 use chrono::Utc;
 use std::fs::File;
 use csv::Writer;
+use tracing::debug;
 
 use crate::{
     solana::SolanaRpcClient,
@@ -54,13 +55,16 @@ impl TaskManager {
         let rate_limiter = self.rate_limiter.clone();
         
         tokio::spawn(async move {
+            debug!("Spawning scan task (max_transactions={})", max_transactions);
             let _ = action_tx.send(Action::ScanStarted);
             
             match Self::scan_accounts(monitor, eligibility_checker, rpc_client, rate_limiter, max_transactions, action_tx.clone()).await {
                 Ok((total, eligible)) => {
+                    debug!("Scan task completed (total={}, eligible={})", total, eligible);
                     let _ = action_tx.send(Action::ScanFinished { total, eligible });
                 }
                 Err(e) => {
+                    debug!("Scan task failed: {}", e);
                     let _ = action_tx.send(Action::ScanFailed(e.to_string()));
                 }
             }
@@ -76,8 +80,10 @@ impl TaskManager {
         action_tx: UnboundedSender<Action>,
     ) -> Result<(usize, usize)> {
         // Discover accounts
+        debug!("Scanning sponsored accounts");
         let sponsored = monitor.get_sponsored_accounts(max_transactions).await?;
         let total = sponsored.len();
+        debug!("Discovered {} sponsored accounts", total);
         
         let mut eligible_count = 0;
         
