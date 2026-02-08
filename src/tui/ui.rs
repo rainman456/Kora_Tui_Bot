@@ -23,6 +23,11 @@ const COLOR_BORDER_INACTIVE: Color = Color::DarkGray;
 /// Render the complete Nexus layout
 pub fn render(f: &mut Frame, state: &State) {
     let size = f.size();
+
+    if size.height < 24 {
+        render_compact(f, size, state);
+        return;
+    }
     
     // Main layout structure
     let chunks = Layout::default()
@@ -43,6 +48,25 @@ pub fn render(f: &mut Frame, state: &State) {
     render_footer(f, chunks[4], state);
     
     // Render help overlay on top if active
+    if state.show_help {
+        render_help_overlay(f, size);
+    }
+}
+
+fn render_compact(f: &mut Frame, size: Rect, state: &State) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),  // Header
+            Constraint::Min(5),     // Main Workspace
+            Constraint::Length(3),  // Footer
+        ])
+        .split(size);
+
+    render_header(f, chunks[0], state);
+    render_workspace(f, chunks[1], state);
+    render_footer(f, chunks[2], state);
+
     if state.show_help {
         render_help_overlay(f, size);
     }
