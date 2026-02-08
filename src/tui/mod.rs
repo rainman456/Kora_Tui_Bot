@@ -224,6 +224,22 @@ async fn handle_command(
                 }));
             }
         }
+
+        Command::StopScan => {
+            if state.is_scanning {
+                if !task_manager.cancel_scan(action_tx) {
+                    state.apply(state::Action::Error(
+                        "Failed to cancel scan: no active scan handle".to_string(),
+                    ));
+                }
+            } else {
+                state.apply(state::Action::Log(state::LogEntry {
+                    timestamp: chrono::Utc::now(),
+                    level: state::LogLevel::Warning,
+                    message: "No active scan to cancel".to_string(),
+                }));
+            }
+        }
         
         Command::DryRun => {
             if let Some(account) = state.get_selected_account() {

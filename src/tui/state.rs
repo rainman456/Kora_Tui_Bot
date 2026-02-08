@@ -10,10 +10,12 @@ const MAX_LOG_ENTRIES: usize = 50;
 pub enum Action {
     // Scan lifecycle
     ScanStarted,
+    ScanCancelRequested,
     AccountFound(AccountEntry),
     ScanResults(Vec<AccountEntry>),
     ScanProgress { current: usize, total: usize },
     ScanFinished { total: usize, eligible: usize },
+    ScanCancelled { scanned: usize, eligible: usize },
     ScanFailed(String),
     
     // Dry-run lifecycle
@@ -166,6 +168,7 @@ pub struct State {
     // System state
     pub rpc_health: RpcHealth,
     pub is_scanning: bool,
+    pub is_cancelling: bool,
     pub is_processing: bool,
     pub network: String,
     pub treasury_address: String,
@@ -204,6 +207,7 @@ impl State {
                 last_check: Utc::now(),
             },
             is_scanning: false,
+            is_cancelling: false,
             is_processing: false,
             network,
             treasury_address,
@@ -216,11 +220,19 @@ impl State {
         match action {
             Action::ScanStarted => {
                 self.is_scanning = true;
+                self.is_cancelling = false;
                 self.accounts.clear();
                 self.dry_run_cache.clear();
                 self.selected_index = 0;
                 self.scroll_offset = 0;
                 self.add_log(LogLevel::Info, "Starting account scan...");
+            }
+
+            Action::ScanCancelRequested => {
+                if self.is_scanning {
+                    self.is_cancelling = true;
+                    self.add_log(LogLevel::Warning, "Cancelling scan...");
+                }
             }
             
             Action::AccountFound(account) => {
@@ -248,6 +260,7 @@ impl State {
             
             Action::ScanFinished { total, eligible } => {
                 self.is_scanning = false;
+                self.is_cancelling = false;
                 self.total_accounts = total;
                 self.eligible_accounts = eligible;
                 self.recalculate_metrics();
@@ -256,9 +269,22 @@ impl State {
                     &format!("Scan complete: {} accounts, {} eligible", total, eligible)
                 );
             }
+
+            Action::ScanCancelled { scanned, eligible } => {
+                self.is_scanning = false;
+                self.is_cancelling = false;
+                self.total_accounts = scanned;
+                self.eligible_accounts = eligible;
+                self.recalculate_metrics();
+                self.add_log(
+                    LogLevel::Warning,
+                    &format!("Scan cancelled: {} accounts scanned, {} eligible", scanned, eligible)
+                );
+            }
             
             Action::ScanFailed(error) => {
                 self.is_scanning = false;
+                self.is_cancelling = false;
                 self.add_log(LogLevel::Error, &format!("Scan failed: {}", error));
             }
             

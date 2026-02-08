@@ -1,6 +1,8 @@
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::Semaphore;
+use tokio_util::sync::CancellationToken;
 use std::sync::Arc;
+use std::sync::Mutex;
 use anyhow::Result;
 use chrono::Utc;
 use std::fs::File;
@@ -24,6 +26,16 @@ pub struct TaskManager {
     reclaim_engine: Option<ReclaimEngine>,
     db: Database,
     rate_limiter: Arc<Semaphore>,
+    scan_control: Arc<Mutex<Option<ScanControl>>>,
+}
+
+struct ScanControl {
+    token: CancellationToken,
+}
+
+enum ScanCompletion {
+    Completed { total: usize, eligible: usize },
+    Cancelled { scanned: usize, eligible: usize },
 }
 
 impl TaskManager {
@@ -44,6 +56,7 @@ impl TaskManager {
             reclaim_engine,
             db,
             rate_limiter,
+            scan_control: Arc::new(Mutex::new(None)),
         }
     }
     
@@ -53,22 +66,63 @@ impl TaskManager {
         let eligibility_checker = self.eligibility_checker.clone();
         let rpc_client = self.rpc_client.clone();
         let rate_limiter = self.rate_limiter.clone();
+        let scan_control = self.scan_control.clone();
+        let cancel_token = CancellationToken::new();
+        let task_token = cancel_token.clone();
         
+        if let Ok(mut guard) = self.scan_control.lock() {
+            *guard = Some(ScanControl { token: cancel_token });
+        }
+
         tokio::spawn(async move {
             debug!("Spawning scan task (max_transactions={})", max_transactions);
             let _ = action_tx.send(Action::ScanStarted);
             
-            match Self::scan_accounts(monitor, eligibility_checker, rpc_client, rate_limiter, max_transactions, action_tx.clone()).await {
-                Ok((total, eligible)) => {
+            match Self::scan_accounts(
+                monitor,
+                eligibility_checker,
+                rpc_client,
+                rate_limiter,
+                max_transactions,
+                action_tx.clone(),
+                task_token,
+            )
+            .await
+            {
+                Ok(ScanCompletion::Completed { total, eligible }) => {
                     debug!("Scan task completed (total={}, eligible={})", total, eligible);
                     let _ = action_tx.send(Action::ScanFinished { total, eligible });
+                }
+                Ok(ScanCompletion::Cancelled { scanned, eligible }) => {
+                    debug!("Scan task cancelled (scanned={}, eligible={})", scanned, eligible);
+                    let _ = action_tx.send(Action::ScanCancelled { scanned, eligible });
                 }
                 Err(e) => {
                     debug!("Scan task failed: {}", e);
                     let _ = action_tx.send(Action::ScanFailed(e.to_string()));
                 }
             }
+
+            if let Ok(mut guard) = scan_control.lock() {
+                *guard = None;
+            }
         });
+
+    }
+
+    pub fn cancel_scan(&self, action_tx: UnboundedSender<Action>) -> bool {
+        let token = {
+            let guard = self.scan_control.lock().ok();
+            guard.and_then(|inner| inner.as_ref().map(|control| control.token.clone()))
+        };
+
+        if let Some(token) = token {
+            token.cancel();
+            let _ = action_tx.send(Action::ScanCancelRequested);
+            true
+        } else {
+            false
+        }
     }
     
     async fn scan_accounts(
@@ -78,10 +132,16 @@ impl TaskManager {
         rate_limiter: Arc<Semaphore>,
         max_transactions: usize,
         action_tx: UnboundedSender<Action>,
-    ) -> Result<(usize, usize)> {
+        cancel_token: CancellationToken,
+    ) -> Result<ScanCompletion> {
         // Discover accounts
         debug!("Scanning sponsored accounts");
-        let sponsored = monitor.get_sponsored_accounts_quick(max_transactions).await?;
+        let sponsored = tokio::select! {
+            result = monitor.get_sponsored_accounts_quick(max_transactions) => result?,
+            _ = cancel_token.cancelled() => {
+                return Ok(ScanCompletion::Cancelled { scanned: 0, eligible: 0 });
+            }
+        };
         let total = sponsored.len();
         debug!("Discovered {} sponsored accounts", total);
         
@@ -89,8 +149,23 @@ impl TaskManager {
         let mut entries = Vec::with_capacity(total);
         
         for (idx, account_info) in sponsored.into_iter().enumerate() {
+            if cancel_token.is_cancelled() {
+                return Ok(ScanCompletion::Cancelled {
+                    scanned: entries.len(),
+                    eligible: eligible_count,
+                });
+            }
+
             // Rate limiting
-            let _permit = rate_limiter.acquire().await?;
+            let _permit = tokio::select! {
+                permit = rate_limiter.acquire() => permit?,
+                _ = cancel_token.cancelled() => {
+                    return Ok(ScanCompletion::Cancelled {
+                        scanned: entries.len(),
+                        eligible: eligible_count,
+                    });
+                }
+            };
             
             // Progress update every 50 accounts
             if idx % 50 == 0 {
@@ -101,17 +176,32 @@ impl TaskManager {
             }
             
             // Check eligibility
-            let is_eligible = eligibility_checker
-                .is_eligible(&account_info.pubkey, account_info.created_at)
-                .await
-                .unwrap_or(false);
+            let is_eligible = tokio::select! {
+                result = eligibility_checker.is_eligible(&account_info.pubkey, account_info.created_at) => {
+                    result.unwrap_or(false)
+                }
+                _ = cancel_token.cancelled() => {
+                    return Ok(ScanCompletion::Cancelled {
+                        scanned: entries.len(),
+                        eligible: eligible_count,
+                    });
+                }
+            };
             
             if is_eligible {
                 eligible_count += 1;
             }
             
             // Get balance
-            let balance = rpc_client.get_balance(&account_info.pubkey).await.unwrap_or(0);
+            let balance = tokio::select! {
+                result = rpc_client.get_balance(&account_info.pubkey) => result.unwrap_or(0),
+                _ = cancel_token.cancelled() => {
+                    return Ok(ScanCompletion::Cancelled {
+                        scanned: entries.len(),
+                        eligible: eligible_count,
+                    });
+                }
+            };
             let rent_sol = balance as f64 / 1_000_000_000.0;
             
             // Calculate age
@@ -119,10 +209,17 @@ impl TaskManager {
             let age_days = age.num_days() as u64;
             
             // Get eligibility reason
-            let reason = eligibility_checker
-                .get_eligibility_reason(&account_info.pubkey, account_info.created_at)
-                .await
-                .unwrap_or_else(|_| "Unknown".to_string());
+            let reason = tokio::select! {
+                result = eligibility_checker.get_eligibility_reason(&account_info.pubkey, account_info.created_at) => {
+                    result.unwrap_or_else(|_| "Unknown".to_string())
+                }
+                _ = cancel_token.cancelled() => {
+                    return Ok(ScanCompletion::Cancelled {
+                        scanned: entries.len(),
+                        eligible: eligible_count,
+                    });
+                }
+            };
             
             // Determine status
             let status = if is_eligible {
@@ -154,7 +251,10 @@ impl TaskManager {
         }
 
         let _ = action_tx.send(Action::ScanResults(entries));
-        Ok((total, eligible_count))
+        Ok(ScanCompletion::Completed {
+            total,
+            eligible: eligible_count,
+        })
     }
     
     /// Spawn a dry-run task

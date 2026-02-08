@@ -40,7 +40,7 @@ impl EventLoop {
         let (event_tx, event_rx) = unbounded_channel();
         
         // Spawn terminal event listener
-        tokio::spawn(async move {
+        std::thread::spawn(move || {
             loop {
                 // Poll for events with 33ms timeout (30 FPS)
                 if event::poll(Duration::from_millis(33)).unwrap_or(false) {
@@ -96,6 +96,7 @@ impl EventLoop {
 pub enum Command {
     Quit,
     Scan,
+    StopScan,
     DryRun,
     Execute,
     Export,
@@ -129,6 +130,7 @@ impl Command {
         match code {
             KeyCode::Char('q') | KeyCode::Esc => Some(Self::Quit),
             KeyCode::Char('s') | KeyCode::Char('S') => Some(Self::Scan),
+            KeyCode::Char('c') | KeyCode::Char('C') => Some(Self::StopScan),
             KeyCode::Char('d') | KeyCode::Char('D') => Some(Self::DryRun),
             KeyCode::Char('e') => Some(Self::Execute),
             KeyCode::Char('x') | KeyCode::Char('X') => Some(Self::Export),

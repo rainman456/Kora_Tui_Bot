@@ -282,7 +282,9 @@ fn render_monitor_table(f: &mut Frame, area: Rect, state: &State) {
         .height(1)
     }).collect();
     
-    let loading_indicator = if state.is_scanning {
+    let loading_indicator = if state.is_cancelling {
+        " ⟳ CANCELLING..."
+    } else if state.is_scanning {
         " ⟳ SCANNING..."
     } else if state.is_processing {
         " ⟳ PROCESSING..."
@@ -547,6 +549,8 @@ fn render_footer(f: &mut Frame, area: Rect, state: &State) {
         // Actions
         Span::styled("s", Style::default().fg(COLOR_SUCCESS).add_modifier(Modifier::BOLD)),
         Span::styled(":Scan ", Style::default().fg(COLOR_MUTED)),
+        Span::styled("c", Style::default().fg(COLOR_WARNING).add_modifier(Modifier::BOLD)),
+        Span::styled(":Stop ", Style::default().fg(COLOR_MUTED)),
         Span::styled("d", Style::default().fg(COLOR_INFO).add_modifier(Modifier::BOLD)),
         Span::styled(":Dry ", Style::default().fg(COLOR_MUTED)),
         Span::styled("e", Style::default().fg(COLOR_DANGER).add_modifier(Modifier::BOLD)),
@@ -639,6 +643,10 @@ fn render_help_overlay(f: &mut Frame, size: Rect) {
         Line::from(vec![
             Span::styled("  s           ", Style::default().fg(COLOR_SUCCESS).add_modifier(Modifier::BOLD)),
             Span::styled("Scan for sponsored accounts", Style::default().fg(COLOR_TEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled("  c           ", Style::default().fg(COLOR_WARNING).add_modifier(Modifier::BOLD)),
+            Span::styled("Cancel active scan (keeps partial results)", Style::default().fg(COLOR_TEXT)),
         ]),
         Line::from(vec![
             Span::styled("  d           ", Style::default().fg(COLOR_INFO).add_modifier(Modifier::BOLD)),
