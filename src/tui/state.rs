@@ -11,6 +11,7 @@ pub enum Action {
     // Scan lifecycle
     ScanStarted,
     AccountFound(AccountEntry),
+    ScanResults(Vec<AccountEntry>),
     ScanProgress { current: usize, total: usize },
     ScanFinished { total: usize, eligible: usize },
     ScanFailed(String),
@@ -217,12 +218,22 @@ impl State {
                 self.is_scanning = true;
                 self.accounts.clear();
                 self.dry_run_cache.clear();
+                self.selected_index = 0;
+                self.scroll_offset = 0;
                 self.add_log(LogLevel::Info, "Starting account scan...");
             }
             
             Action::AccountFound(account) => {
                 self.accounts.push(account);
                 self.recalculate_metrics();
+            }
+
+            Action::ScanResults(accounts) => {
+                self.accounts = accounts;
+                self.recalculate_metrics();
+                if self.selected_index >= self.accounts.len() {
+                    self.selected_index = 0;
+                }
             }
             
             Action::ScanProgress { current, total } => {

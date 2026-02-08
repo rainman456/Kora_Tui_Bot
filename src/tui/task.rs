@@ -86,6 +86,7 @@ impl TaskManager {
         debug!("Discovered {} sponsored accounts", total);
         
         let mut eligible_count = 0;
+        let mut entries = Vec::with_capacity(total);
         
         for (idx, account_info) in sponsored.into_iter().enumerate() {
             // Rate limiting
@@ -147,10 +148,12 @@ impl TaskManager {
                 creation_slot: account_info.creation_slot,
                 data_size: account_info.data_size,
             };
-            
+
+            entries.push(entry.clone());
             let _ = action_tx.send(Action::AccountFound(entry));
         }
-        
+
+        let _ = action_tx.send(Action::ScanResults(entries));
         Ok((total, eligible_count))
     }
     
