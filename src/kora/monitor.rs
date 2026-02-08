@@ -63,6 +63,34 @@ impl KoraMonitor {
         debug!("Found {} sponsored accounts", sponsored_accounts.len());
         Ok(sponsored_accounts)
     }
+
+    /// Get sponsored accounts without fetching last activity (faster for TUI scans)
+    pub async fn get_sponsored_accounts_quick(&self, max_transactions: usize) -> Result<Vec<SponsoredAccountInfo>> {
+        info!("Scanning for Kora-sponsored accounts (quick path)...");
+
+        let discovery = AccountDiscovery::new(
+            self.rpc_client.clone(),
+            self.operator_pubkey,
+        );
+
+        let discovered = discovery.discover_from_signatures(max_transactions).await?;
+
+        let sponsored_accounts = discovered.into_iter().map(|account_info| {
+            SponsoredAccountInfo {
+                pubkey: account_info.pubkey,
+                created_at: account_info.creation_time,
+                rent_lamports: account_info.initial_balance,
+                data_size: account_info.data_size,
+                account_type: account_info.account_type.into(),
+                last_activity: None,
+                creation_signature: account_info.creation_signature,
+                creation_slot: account_info.creation_slot,
+            }
+        }).collect();
+
+        debug!("Found {} sponsored accounts (quick path)", sponsored_accounts.len());
+        Ok(sponsored_accounts)
+    }
     
     pub async fn is_kora_sponsored(&self, pubkey: &Pubkey) -> Result<bool> {
         debug!("Checking if account {} was sponsored by Kora", pubkey);

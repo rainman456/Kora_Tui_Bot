@@ -81,7 +81,7 @@ impl TaskManager {
     ) -> Result<(usize, usize)> {
         // Discover accounts
         debug!("Scanning sponsored accounts");
-        let sponsored = monitor.get_sponsored_accounts(max_transactions).await?;
+        let sponsored = monitor.get_sponsored_accounts_quick(max_transactions).await?;
         let total = sponsored.len();
         debug!("Discovered {} sponsored accounts", total);
         
