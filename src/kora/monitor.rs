@@ -75,7 +75,7 @@ impl KoraMonitor {
 
         let discovered = discovery.discover_from_signatures(max_transactions).await?;
 
-        let sponsored_accounts = discovered.into_iter().map(|account_info| {
+        let sponsored_accounts: Vec<SponsoredAccountInfo> = discovered.into_iter().map(|account_info| {
             SponsoredAccountInfo {
                 pubkey: account_info.pubkey,
                 created_at: account_info.creation_time,
