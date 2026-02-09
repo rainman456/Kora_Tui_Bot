@@ -1,1424 +1,359 @@
-# **Kora Rent-Reclaim Bot: Comprehensive Documentation**
+# Kora Rent-Reclaim Bot
 
-## **Table of Contents**
+Automated rent reclamation for Kora-sponsored Solana accounts.
 
-1. [Overview](#overview)
-2. [Problem Statement](#problem-statement)
-3. [Solution Architecture](#solution-architecture)
-4. [How Solana Rent Works](#how-solana-rent-works)
-5. [How Kora Sponsorship Works](#how-kora-sponsorship-works)
-6. [Bot Architecture & Components](#bot-architecture--components)
-7. [Account Discovery Process](#account-discovery-process)
-8. [Eligibility Checking Logic](#eligibility-checking-logic)
-9. [Rent Reclamation Process](#rent-reclamation-process)
-10. [Installation & Setup](#installation--setup)
-11. [Usage Guide](#usage-guide)
-12. [Configuration Reference](#configuration-reference)
-13. [Safety Mechanisms](#safety-mechanisms)
-14. [Performance & Optimization](#performance--optimization)
-15. [Troubleshooting](#troubleshooting)
+## Overview
 
----
+This bot monitors, tracks, and reclaims SOL locked as rent in accounts created through Kora transaction sponsorship. It provides operators with visibility into sponsored accounts and automates the recovery of rent from closed or inactive accounts.
 
-## **Overview**
+**What it does:**
 
-The **Kora Rent-Reclaim Bot** is an automated system designed to identify, track, and safely reclaim SOL locked as rent in accounts created/sponsored by a Kora node operator. 
+- Discovers all accounts sponsored by your Kora node
+- Monitors account status and eligibility for rent reclamation
+- Safely reclaims SOL from closed, empty, or inactive accounts
+- Provides audit trails, statistics, and reporting
+- Includes safety mechanisms: dry-run mode, whitelist/blacklist, minimum inactive periods
 
-**Problem it solves:**
-- Kora sponsors account creation on Solana, paying for rent (SOL permanently locked in accounts)
-- When accounts are closed or become unused, that rent is usually lost unless explicitly reclaimed
-- Operators have no visibility into which accounts hold locked rent or when to reclaim it
-- Manual reclamation is tedious and error-prone
+**Why it exists:**
 
-**What the bot does:**
-- ✅ Automatically discovers all accounts sponsored by your Kora operator
-- ✅ Continuously monitors which accounts are eligible for rent reclamation
-- ✅ Safely reclaims SOL from closed/inactive/empty accounts
-- ✅ Provides detailed audit trails and statistics
-- ✅ Includes safety features (dry-run, whitelist, blacklist, minimum inactive periods)
-- ✅ Runs as an automated service or manual CLI tool
+Kora sponsors account creation on Solana by paying rent upfront. When sponsored accounts are closed or become unused, that rent remains locked unless explicitly reclaimed. Most operators don't track which accounts they sponsored or when accounts become eligible for reclamation, resulting in capital locked in forgotten accounts.
 
----
+This bot solves that operational problem.
 
-## **Problem Statement**
+## How Kora Works
 
-### **The Rent Problem in Solana**
+Kora enables apps to sponsor transactions and account creation on Solana. When Kora sponsors account creation:
 
-On Solana, every on-chain account must maintain a minimum balance called **rent-exempt minimum**. This is calculated based on the account's data size:
-
-```
-rent_exempt_minimum = (account_data_size + 128 bytes) × yearly_rent_rate × 2 years
-```
-
-When an account is created, SOL equal to this minimum must be deposited upfront. **This SOL is locked indefinitely** until the account is closed.
-
-### **Kora's Role**
-
-Kora is a **Solana transaction sponsorship service**. When Kora sponsors account creation:
-1. Kora's fee payer wallet pays the rent upfront
+1. The Kora fee payer wallet pays the rent-exempt minimum upfront
 2. That SOL becomes locked in the created account
-3. If the account is later closed or becomes unused, the rent is never recovered
+3. The SOL remains locked until the account is explicitly closed
 
-### **The Silent Capital Loss**
+On Solana, every account must maintain a minimum balance (rent-exempt minimum) calculated based on account data size. This rent is locked indefinitely until the account is closed.
 
-Most Kora operators:
-- Don't track which accounts they sponsored
-- Don't know when accounts become closeable
-- Don't actively reclaim rent from closed accounts
-- Result: **Thousands of SOL sitting locked in forgotten accounts**
+For detailed explanations of Kora sponsorship mechanics and rent calculation, see:
 
----
+- [BOTLOGIC.md](docs/BOTLOGIC.md) - Comprehensive bot logic and architecture
+- [docs/](docs/) - Additional documentation and guides
 
-## **Solution Architecture**
-
-```mermaid
-graph LR
-    A["Kora Operator"] -->|"Sponsors Txns"| B["Solana Blockchain"]
-    B -->|"History"| C["Rent-Reclaim Bot"]
-    C -->|"Discovers"| D["Sponsored Accounts"]
-    C -->|"Checks"| E["Eligibility Engine"]
-    E -->|"Identifies"| F["Reclaimable Accounts"]
-    C -->|"Executes"| G["Reclaim Transactions"]
-    G -->|"Returns SOL"| H["Treasury Wallet"]
-    C -->|"Logs & Tracks"| I["SQLite Database"]
-    
-    style A fill:#2E7D32
-    style H fill:#1976D2
-    style F fill:#F57C00
-    style C fill:#7B1FA2
-```
-
----
-
-## **How Solana Rent Works**
-
-### **Rent Calculation**
-
-```
-rent_per_year = (data_size + 128) bytes × 3.4 lamports/byte-year
-rent_exempt_min = rent_per_year × 2 years
-```
-
-**Example:**
-- Empty account (0 bytes of data) needs ~5,616 lamports (~0.0056 SOL)
-- 10 KB account needs ~83,920 lamports (~0.084 SOL)
-- 1 MB account needs ~8.4 SOL
-
-### **Rent Epochs**
-
-- Solana charges rent each epoch (~2 days)
-- Accounts below minimum balance are automatically purged
-- Accounts meeting minimum balance are "rent-exempt" (never charged, never purged)
-
-### **Why Kora Locks Rent**
-
-When Kora creates an account for you:
-1. It deposits the rent-exempt minimum
-2. The account is now rent-exempt (can never be charged)
-3. **That SOL is permanently locked** unless someone explicitly closes the account
-
----
-
-## **How Kora Sponsorship Works**
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant Kora Node
-    participant Fee Payer Wallet
-    participant Solana Chain
-    participant Account
-
-    User->>Kora Node: Request sponsored txn (e.g., create token account)
-    Kora Node->>Fee Payer Wallet: Sign with fee payer key
-    Fee Payer Wallet->>Solana Chain: Send CreateAccount instruction + rent
-    Solana Chain->>Account: Create account with rent-exempt minimum
-    Solana Chain->>Fee Payer Wallet: Deduct rent lamports
-    
-    Note over Account: SOL is now LOCKED
-    Note over Account: Can only be recovered by closing the account
-```
-
-### **Key Insight: The Fee Payer**
-
-Every sponsored transaction must have a **fee payer** (a keypair that signs and funds the transaction). For Kora nodes, this is typically:
-- Configured in `signers.toml` as the `KORA_SIGNER_ADDRESS`
-- A stable public key that never changes
-- **The anchor for our bot's discovery process**
-
-**The Bot's Logic:**
-> "Any account created in a transaction signed by the Kora fee payer = sponsored account"
-
----
-
-## **Bot Architecture & Components**
-
-```mermaid
-graph TB
-    subgraph "CLI Layer"
-        CLI["CLI Commands"]
-    end
-    
-    subgraph "Core Logic"
-        Monitor["KoraMonitor<br/>Discovers Accounts"]
-        Eligibility["EligibilityChecker<br/>Determines Eligibility"]
-        Engine["ReclaimEngine<br/>Executes Reclaims"]
-        Batch["BatchProcessor<br/>Handles Rate Limiting"]
-    end
-    
-    subgraph "Solana Integration"
-        RPC["SolanaRpcClient<br/>JSON-RPC Wrapper"]
-        Discovery["AccountDiscovery<br/>Parses Transactions"]
-        Rent["RentCalculator<br/>Rent Utilities"]
-    end
-    
-    subgraph "Storage & Persistence"
-        DB["SQLite Database<br/>History & Audit Trail"]
-    end
-    
-    subgraph "Configuration"
-        Config["Config File<br/>Environment Setup"]
-    end
-    
-    CLI -->|uses| Monitor
-    CLI -->|uses| Eligibility
-    CLI -->|uses| Engine
-    CLI -->|uses| Batch
-    
-    Monitor -->|queries| Discovery
-    Discovery -->|calls| RPC
-    Eligibility -->|checks| Discovery
-    Eligibility -->|calculates| Rent
-    Engine -->|signs| RPC
-    Batch -->|orchestrates| Engine
-    
-    Monitor -->|writes| DB
-    Eligibility -->|reads| DB
-    Engine -->|writes| DB
-    
-    Monitor -->|reads| Config
-    Eligibility -->|reads| Config
-    Engine -->|reads| Config
-    
-    style Monitor fill:#64B5F6
-    style Eligibility fill:#64B5F6
-    style Engine fill:#FF7043
-    style Batch fill:#FF7043
-    style Discovery fill:#A5D6A7
-    style RPC fill:#A5D6A7
-    style DB fill:#FFD54F
-```
-
-### **Core Modules**
-
-| Module | Responsibility | Key Types |
-|--------|-----------------|-----------|
-| **`kora/monitor.rs`** | Discovers Kora-sponsored accounts from blockchain history | `KoraMonitor`, `SponsoredAccountInfo` |
-| **`solana/accounts.rs`** | Parses Solana transactions for account creations | `AccountDiscovery`, `SponsoredAccountInfo` |
-| **`reclaim/eligibility.rs`** | Determines if account is eligible for reclamation | `EligibilityChecker` |
-| **`reclaim/engine.rs`** | Builds and sends reclaim transactions | `ReclaimEngine`, `ReclaimResult` |
-| **`reclaim/batch.rs`** | Processes multiple accounts with rate limiting | `BatchProcessor`, `BatchSummary` |
-| **`storage/db.rs`** | Persists accounts and reclaim history | `Database` |
-| **`solana/client.rs`** | Thin async wrapper around Solana JSON-RPC | `SolanaRpcClient` |
-
----
-
-## **Account Discovery Process**
-
-### **How the Bot Finds Sponsored Accounts**
-
-```mermaid
-graph TD
-    A["Bot Starts"] -->|"Load Config"| B["Get Kora Fee Payer Pubkey"]
-    B -->|"Query RPC"| C["getSignaturesForAddress<br/>Fee Payer"]
-    C -->|"Returns Txn Signatures<br/>up to 1000 per call"| D["Iterate Signatures"]
-    D -->|"Fetch with Pagination"| E["getTransaction<br/>Full Txn Details"]
-    E -->|"Parse Instructions"| F["Extract Account Keys"]
-    F -->|"Look for CreateAccount<br/>or Initialize Instructions"| G["Identify New Accounts"]
-    G -->|"Extract Metadata<br/>Creation Time, Balance, Owner"| H["Create SponsoredAccountInfo"]
-    H -->|"Store/Track"| I["Accounts Database"]
-    I -->|"Return to Caller"| J["Monitor Complete"]
-    
-    D -->|"More Txns?"| C
-    
-    style B fill:#E8F5E9
-    style C fill:#E8F5E9
-    style E fill:#E8F5E9
-    style G fill:#FFE0B2
-    style H fill:#BBDEFB
-    style I fill:#F8BBD0
-```
-
-### **Account Detection Logic**
-
-The bot scans for **two types of account creations:**
-
-**1. System Program Accounts**
-```rust
-// Look for: system_instruction::create_account
-// Pattern: CreateAccount { funder, owner, lamports, space }
-// New account: accounts[1] in the instruction
-```
-
-**2. SPL Token Accounts**
-```rust
-// Look for: initialize_account (token) or associated_account_create
-// Pattern: Creates a token account owned by spl_token program
-// New account: extracted from instruction metadata
-```
-
-### **Key Implementation: `discover_from_signatures()`**
-
-```rust
-pub async fn discover_from_signatures(&self, max_signatures: usize) 
-    -> Result<Vec<SponsoredAccountInfo>> {
-    
-    let mut all_sponsored = Vec::new();
-    let mut before_signature: Option<Signature> = None;
-    
-    while total_fetched < max_signatures {
-        // 1. Fetch batch of signatures (max 1000)
-        let signatures = self.rpc_client
-            .get_signatures_for_address(&self.fee_payer, before_signature, None, limit)
-            .await?;
-        
-        // 2. For each signature, parse the full transaction
-        for sig_info in &signatures {
-            if sig_info.err.is_some() { continue; } // Skip failed txns
-            
-            let tx = self.rpc_client.get_transaction(&signature).await?;
-            
-            // 3. Look for account creations in instructions
-            let creations = self.parse_transaction_for_creations(&tx, signature).await?;
-            all_sponsored.extend(creations);
-        }
-        
-        // 4. Paginate: set before_signature for next iteration
-        before_signature = Some(signatures.last().signature);
-    }
-    
-    Ok(all_sponsored)
-}
-```
-
-### **Efficiency Considerations**
-
-- **Pagination**: Fetches up to 1,000 signatures per RPC call, loops until `max_signatures` reached
-- **Rate Limiting**: 100ms delay between RPC calls (configurable) to avoid throttling
-- **Caching**: Database stores discovered accounts to avoid re-scanning
-- **Incremental Scanning**: Could be enhanced to use `until` parameter to only fetch new txns
-
----
-
-## **Eligibility Checking Logic**
-
-### **When is an Account Eligible for Reclamation?**
-
-An account is eligible if **ANY** of these conditions are true:
-
-```
-1. Account is CLOSED (doesn't exist on blockchain)
-   → No rent can be recovered (already gone or someone claimed it)
-   → But bot notes it as "reclaimable" for record-keeping
-
-2. Account is EMPTY & INACTIVE
-   - Empty: No data, balance ~= rent-exempt minimum
-   - Inactive: No transactions for N days (configurable, default 30)
-   → Safe to close and reclaim
-
-3. Account meets MINIMUM INACTIVE PERIOD
-   - Created > N days ago AND no recent activity
-   → Safe to assume it's abandoned
-```
-
-### **Eligibility Decision Tree**
-
-```mermaid
-graph TD
-    A["Check Account"] -->|"Is Whitelisted?"| B{"Yes"}
-    B -->|"Protected"| SKIP1["❌ NOT ELIGIBLE<br/>Account is protected"]
-    A -->|"Is Blacklisted?"| C{"Yes"}
-    C -->|"Excluded"| SKIP2["❌ NOT ELIGIBLE<br/>Account is excluded"]
-    A -->|"Doesn't Exist?"| D{"Yes"}
-    D -->|"Closed"| YES1["✅ ELIGIBLE<br/>Account is closed"]
-    A -->|"Exists?"| E{"Yes"}
-    E -->|"Check Data"| F{"Has Meaningful Data?"}
-    F -->|"Yes"| SKIP3["❌ NOT ELIGIBLE<br/>Account still has data"]
-    F -->|"No"| G{"Is Empty?"}
-    G -->|"Yes"| H{"Inactive?"}
-    H -->|"Yes"| YES2["✅ ELIGIBLE<br/>Empty & Inactive"]
-    H -->|"No"| SKIP4["❌ NOT ELIGIBLE<br/>Account has activity"]
-    A -->|"Check Age"| I{"Age >= Min Days?"}
-    I -->|"No"| SKIP5["❌ NOT ELIGIBLE<br/>Too new"]
-    I -->|"Yes"| YES3["✅ ELIGIBLE<br/>Meets criteria"]
-    
-    style SKIP1 fill:#FFCDD2
-    style SKIP2 fill:#FFCDD2
-    style SKIP3 fill:#FFCDD2
-    style SKIP4 fill:#FFCDD2
-    style SKIP5 fill:#FFCDD2
-    style YES1 fill:#C8E6C9
-    style YES2 fill:#C8E6C9
-    style YES3 fill:#C8E6C9
-```
-
-### **Implementation: `is_eligible()`**
-
-```rust
-pub async fn is_eligible(&self, pubkey: &Pubkey, created_at: DateTime<Utc>) -> Result<bool> {
-    // Check whitelists/blacklists
-    if self.is_whitelisted(pubkey) { return Ok(false); }
-    if self.is_blacklisted(pubkey) { return Ok(false); }
-    
-    // Check 1: Account is closed (doesn't exist)
-    if !self.rpc_client.is_account_active(pubkey).await? {
-        return Ok(true); // Closed = eligible
-    }
-    
-    // Check 2: Account is empty AND inactive
-    if let Some(account) = self.rpc_client.get_account(pubkey).await? {
-        let min_balance = self.rpc_client
-            .get_minimum_balance_for_rent_exemption(account.data.len())?;
-        let is_empty = RentCalculator::is_empty_account(&account, min_balance);
-        
-        if is_empty && self.check_inactivity(pubkey).await? {
-            return Ok(true); // Empty + inactive = eligible
-        }
-    }
-    
-    // Check 3: Minimum inactive period
-    let now = Utc::now();
-    let min_inactive = Duration::days(self.config.reclaim.min_inactive_days as i64);
-    if now - created_at < min_inactive {
-        return Ok(false); // Too young
-    }
-    
-    Ok(false) // Doesn't meet any criteria
-}
-```
-
-### **Activity Checking: `check_inactivity()`**
-
-```rust
-pub async fn check_inactivity(&self, pubkey: &Pubkey) -> Result<bool> {
-    // Get last transaction time for this account
-    match discovery.get_last_transaction_time(pubkey).await? {
-        Some(last_activity) => {
-            let inactive = Utc::now() - last_activity 
-                > Duration::days(self.config.reclaim.min_inactive_days as i64);
-            Ok(inactive)
-        }
-        None => {
-            // No transactions = inactive
-            Ok(true)
-        }
-    }
-}
-```
-
-### **Key Eligibility Parameters**
-
-| Parameter | Default | Purpose |
-|-----------|---------|---------|
-| `min_inactive_days` | 30 | Account must be inactive for this many days |
-| `whitelist` | `[]` | Protected accounts (never reclaim) |
-| `blacklist` | `[]` | Excluded accounts (for testing) |
-
----
-
-## **Rent Reclamation Process**
-
-### **How the Bot Reclaims Rent**
-
-Once an account is identified as eligible, the bot must **safely close it** and return the SOL to the treasury.
-
-```mermaid
-graph TD
-    A["Eligible Account Identified"] -->|"Get Balance"| B["Check Current Lamports"]
-    B -->|"Lamports > 0?"| C{"Yes"}
-    C -->|"Build Instruction"| D{"Account Type?"}
-    D -->|"System Program"| E["Transfer Instruction<br/>Send lamports to treasury"]
-    D -->|"SPL Token"| F["CloseAccount Instruction<br/>Burn & return lamports"]
-    D -->|"Other"| G["Custom Logic<br/>Based on program"]
-    E -->|"Add Signer"| H["Sign with Treasury Keypair"]
-    F -->|"Add Signer"| H
-    G -->|"Add Signer"| H
-    H -->|"Get Latest Blockhash"| I["Current Slot Hash"]
-    I -->|"Build Transaction"| J["Solana Transaction"]
-    J -->|"Send to RPC"| K["send_and_confirm_transaction"]
-    K -->|"Retry on Failure"| L["Max 3 Attempts<br/>Exponential Backoff"]
-    L -->|"Success"| M["Record Signature"]
-    M -->|"Log Result"| N["Database"]
-    
-    style A fill:#BBDEFB
-    style D fill:#FFF9C4
-    style E fill:#C8E6C9
-    style F fill:#C8E6C9
-    style M fill:#C8E6C9
-    style K fill:#FF7043
-```
-
-### **Account Type Handling**
-
-**System Accounts:**
-```rust
-// The simplest case: transfer all lamports to treasury
-let instruction = system_instruction::transfer(
-    &account_pubkey,
-    &self.treasury_wallet,
-    balance_lamports
-);
-```
-
-**SPL Token Accounts:**
-```rust
-// Must close via token program (careful with authorities)
-let instruction = spl_token::instruction::close_account(
-    &spl_token::id(),
-    &account_pubkey,           // Token account to close
-    &self.treasury_wallet,     // Destination for lamports
-    &account_owner,            // Authority (usually fee payer)
-    &[&signer],                // Signers
-)?;
-```
-
-### **Transaction Building & Signing**
-
-```rust
-pub async fn reclaim_account(
-    &self,
-    account_pubkey: &Pubkey,
-    account_type: &AccountType,
-) -> Result<ReclaimResult> {
-    // 1. Verify account exists and get balance
-    let balance = self.rpc_client.get_account(account_pubkey)
-        .await?
-        .map(|a| a.lamports)
-        .ok_or(ReclaimError::AccountNotFound)?;
-    
-    // 2. Build close instruction
-    let instruction = self.build_close_instruction(account_pubkey, account_type)?;
-    
-    // 3. If dry-run, return without sending
-    if self.dry_run {
-        return Ok(ReclaimResult {
-            signature: None,
-            amount_reclaimed: balance,
-            account: *account_pubkey,
-            dry_run: true,
-        });
-    }
-    
-    // 4. Get latest blockhash
-    let recent_blockhash = self.rpc_client.get_latest_blockhash()?;
-    
-    // 5. Create and sign transaction
-    let transaction = Transaction::new_signed_with_payer(
-        &[instruction],
-        Some(&self.signer.pubkey()),  // Fee payer = treasury wallet
-        &[&self.signer],               // Sign with treasury keypair
-        recent_blockhash,
-    );
-    
-    // 6. Send with retry logic (max 3 attempts)
-    let signature = self.rpc_client.send_and_confirm_transaction(&transaction).await?;
-    
-    Ok(ReclaimResult {
-        signature: Some(signature),
-        amount_reclaimed: balance,
-        account: *account_pubkey,
-        dry_run: false,
-    })
-}
-```
-
-### **Retry Logic**
-
-```rust
-pub async fn send_and_confirm_transaction(&self, transaction: &Transaction) 
-    -> Result<Signature> {
-    
-    const MAX_RETRIES: u32 = 3;
-    let mut last_error = None;
-    
-    for attempt in 1..=MAX_RETRIES {
-        match self.client.send_and_confirm_transaction(transaction) {
-            Ok(signature) => return Ok(signature),
-            Err(e) => {
-                warn!("Transaction attempt {} failed: {}", attempt, e);
-                last_error = Some(e);
-                
-                if attempt < MAX_RETRIES {
-                    // Exponential backoff: 2s, 4s, 8s
-                    let delay = Duration::from_secs(2u64.pow(attempt));
-                    tokio::time::sleep(delay).await;
-                }
-            }
-        }
-    }
-    
-    Err(last_error.unwrap().into())
-}
-```
-
----
-
-## **Batch Processing & Rate Limiting**
-
-When the bot identifies many eligible accounts, it must process them carefully to avoid:
-- **RPC rate limiting** (Solana RPC servers have per-second limits)
-- **Network congestion** (too many txns at once)
-- **Slot limits** (Solana can't process infinite txns per slot)
-
-### **Batch Processing Flow**
-
-```mermaid
-graph TD
-    A["List: 1000 Eligible Accounts"] -->|"Configure Batches"| B["Batch Size: 10<br/>Delay: 1000ms"]
-    B -->|"Process in Chunks"| C["Batch 1: Accounts 1-10"]
-    C -->|"Reclaim Each"| D["Account 1: Success ✓"]
-    C -->|"Reclaim Each"| E["Account 2: Success ✓"]
-    C -->|"Reclaim Each"| F["Account 3: Failed ✗"]
-    C -->|"Reclaim Each"| G["..."]
-    D -->|"Track Results"| H["Summary: 9/10 OK<br/>Reclaimed: 0.5 SOL"]
-    E -->|"Track Results"| H
-    F -->|"Track Results"| H
-    H -->|"Wait Delay"| I["Sleep 1000ms"]
-    I -->|"Next Batch"| J["Batch 2: Accounts 11-20"]
-    J -->|"Repeat..."| K["All Batches Complete"]
-    K -->|"Report"| L["Final Summary:<br/>980 success<br/>20 failed"]
-    
-    style C fill:#FFF9C4
-    style H fill:#BBDEFB
-    style K fill:#C8E6C9
-    style L fill:#C8E6C9
-```
-
-### **Implementation: `BatchProcessor`**
-
-```rust
-pub async fn process_batch(
-    &self,
-    accounts: Vec<(Pubkey, AccountType)>,
-) -> Result<BatchSummary> {
-    let mut summary = BatchSummary::default();
-    summary.total_accounts = accounts.len();
-    
-    // Process in chunks
-    for (batch_num, chunk) in accounts.chunks(self.batch_size).enumerate() {
-        info!("Processing batch {}", batch_num + 1);
-        
-        for (pubkey, account_type) in chunk {
-            match self.engine.reclaim_account(pubkey, account_type).await {
-                Ok(result) => {
-                    summary.successful += 1;
-                    summary.total_reclaimed += result.amount_reclaimed;
-                    summary.results.push((*pubkey, Ok(result)));
-                }
-                Err(e) => {
-                    summary.failed += 1;
-                    warn!("Failed to reclaim {}: {}", pubkey, e);
-                    summary.results.push((*pubkey, Err(e)));
-                }
-            }
-        }
-        
-        // Delay between batches (except after last)
-        if batch_num < (accounts.len() / self.batch_size) {
-            tokio::time::sleep(self.batch_delay).await;
-        }
-    }
-    
-    Ok(summary)
-}
-```
-
----
-
-## **Installation & Setup**
-
-### **Prerequisites**
-
-- **Rust 1.70+** ([install](https://www.rust-lang.org/))
-- **Solana CLI** (optional, for keypair generation)
-- **RPC Access** to Solana devnet/mainnet
-- **Kora Node Info** (operator pubkey from `signers.toml`)
-
-### **1. Clone & Build**
+## Build
 
 ```bash
-git clone <this-repo>
-cd kora-rent-reclaim-bot
-
-# Build release binary
 cargo build --release
-
-# Binary will be at: target/release/kora-reclaim
 ```
 
-### **2. Configure**
+The binary will be available at `target/release/kora-reclaim`.
 
-Create `config.toml`:
+## Configuration
 
-```bash
-cp config.toml my-config.toml
-```
+The bot is configured using `config.toml`. See [src/config.rs](src/config.rs) for field definitions and validation logic.
 
-Edit `my-config.toml` with your values:
+### Example Configuration
 
 ```toml
 [solana]
-rpc_url = "https://api.devnet.solana.com"  # Your RPC endpoint
-network = "Devnet"                          # Or "Mainnet"
+rpc_url = "https://api.devnet.solana.com"
+network = "Devnet"
 commitment = "confirmed"
 rate_limit_delay_ms = 100
 
 [kora]
-# Get this from your Kora node's signers.toml
+# Kora operator (fee payer) public key from your Kora node's signers.toml
 operator_pubkey = "5VVJ18M8TTwCXDNpZRy2YmKEu3V6LSJSxZCBH3FqKkqP"
 
-# Treasury wallet (where reclaimed SOL goes)
-treasury_wallet = "YOUR_TREASURY_PUBKEY_HERE"
+# Treasury wallet where reclaimed SOL will be sent
+treasury_wallet = "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU"
 
-# Path to treasury keypair JSON
+# Path to treasury keypair JSON (must own this keypair to sign reclaim transactions)
 treasury_keypair_path = "./treasury-keypair.json"
 
 [reclaim]
+# Minimum days an account must be inactive before reclaim
 min_inactive_days = 30
-auto_reclaim_enabled = false
-batch_size = 10
-batch_delay_ms = 1000
-dry_run = true              # Start with dry-run!
 
-whitelist = []              # Protected accounts
+# Enable automatic reclaim mode
+auto_reclaim_enabled = false
+
+# Number of accounts to process per batch
+batch_size = 10
+
+# Delay between batches (milliseconds)
+batch_delay_ms = 1000
+
+# Dry run mode: simulate reclaims without sending transactions
+dry_run = true
+
+# Protected accounts (never reclaim)
+whitelist = []
+
+# Excluded accounts
 blacklist = []
 
 [database]
 path = "./kora_reclaim.db"
+
+[telegram]
+bot_token = "YOUR_BOT_TOKEN_HERE"
+authorized_users = []
+notifications_enabled = true
+alert_threshold_sol = 0.01
 ```
 
-### **3. Treasury Keypair**
+### Configuration Notes
 
-You need the **private key** for your treasury wallet to sign reclaim transactions.
+- **operator_pubkey**: The Kora fee payer public key. All accounts created in transactions signed by this key are considered sponsored accounts.
+- **treasury_wallet**: Destination for reclaimed SOL. You must own the corresponding keypair.
+- **treasury_keypair_path**: Path to the treasury keypair JSON file (Solana keypair format: array of 64 bytes).
+- **dry_run**: Always start with `dry_run = true` to test without sending transactions.
 
-**Generate a new keypair:**
+## Testing the Bot
+
+The bot includes a test client for creating sponsored accounts on a local validator or devnet.
+
+### Test Flow
+
+1. **Navigate to test client:**
+
 ```bash
-solana-keygen new --outfile treasury-keypair.json
+cd kora-test/client
 ```
 
-**Export existing keypair:**
-```bash
-# If you have it in ~/.config/solana/id.json:
-cp ~/.config/solana/id.json treasury-keypair.json
-```
-
-**Solana keypair format:**
-```json
-[1, 2, 3, ..., 64]  # Array of 64 bytes (secret key)
-```
-
-### **4. Initialize Database**
+2. **Install dependencies:**
 
 ```bash
-cargo run --release -- init
+bun install
 ```
 
-Output:
-```
-✓ Database initialized
-✓ Configuration loaded
+3. **Initialize test environment:**
 
-Configuration:
-  RPC URL:        https://api.devnet.solana.com
-  Network:        Devnet
-  Operator:       5VVJ18M8TTwCXDNpZRy2YmKEu3V6LSJSxZCBH3FqKkqP
-  Treasury:       YOUR_TREASURY_PUBKEY_HERE
-  Dry Run:        true
-  Min Inactive:   30 days
-
-Ready to use!
+```bash
+bun init-env
 ```
 
----
+This generates a Kora keypair and sets up the test environment.
 
-## **Usage Guide**
+4. **Create test accounts:**
 
-### **Command 1: Scan for Eligible Accounts**
+```bash
+bun simple
+```
 
-Discover and check all sponsored accounts for eligibility:
+This creates sponsored accounts using the generated Kora keypair.
+
+5. **Export Kora keypair:**
+
+```bash
+bun export
+```
+
+This outputs the Kora public key and private key JSON.
+
+### Extracting Test Configuration
+
+After running the test client:
+
+1. **Get the Kora public key** from `bun export` output
+2. **Get the Kora private key JSON** from `bun export` output
+3. **Set a custom treasury public key** (your own wallet)
+4. **Generate or export your treasury keypair JSON**
+
+Update `config.toml` with these values:
+
+```toml
+[kora]
+operator_pubkey = "<KORA_PUBLIC_KEY_FROM_EXPORT>"
+treasury_wallet = "<YOUR_TREASURY_PUBLIC_KEY>"
+treasury_keypair_path = "./treasury-keypair.json"
+```
+
+## Bot Logic & Internal Design
+
+For detailed explanations of:
+
+- Account discovery process
+- Eligibility checking logic
+- Rent reclamation mechanics
+- Batch processing and rate limiting
+- Safety mechanisms
+
+See [BOTLOGIC.md](docs/BOTLOGIC.md).
+
+For architectural documentation, see the [docs/](docs/) directory.
+
+## Available Commands
+
+### `tui`
+
+Launch the interactive TUI dashboard.
+
+```bash
+kora-reclaim tui
+```
+
+Provides a visual interface for monitoring accounts, viewing statistics, and managing reclamation.
+
+### `scan`
+
+Scan for eligible accounts.
 
 ```bash
 # Basic scan
-cargo run --release -- scan
+kora-reclaim scan
 
-# Verbose (shows all eligible accounts)
-cargo run --release -- scan --verbose
+# Verbose output (show all eligible accounts)
+kora-reclaim scan --verbose
 
-# Limit to 1000 transactions
-cargo run --release -- scan --limit 1000
-
-# Dry-run explicitly
-cargo run --release -- scan --verbose --dry-run
-```
-
-**Output:**
-```
-Scanning for eligible accounts...
-Found 245 sponsored accounts
-
-=== Scan Results ===
-Total Sponsored:    245
-Eligible for Reclaim: 42 ✓
-Total Reclaimable:   2.345 SOL
-
-Eligible Accounts:
-════════════════════════════════════════════════════════════════════════════════════════
-Pubkey                                    Balance            Created              Status
-════════════════════════════════════════════════════════════════════════════════════════
-TokenkegQQQFSf...5aR  0.005600 SOL        2024-01-15 10:30:45  Eligible
-StateV1DQSm...7vM  0.006400 SOL        2024-01-14 14:20:10  Eligible
-...
-════════════════════════════════════════════════════════════════════════════════════════
-```
-
-### **Command 2: Reclaim from Specific Account**
-
-Reclaim rent from a single account:
-
-```bash
-# With confirmation prompt
-cargo run --release -- reclaim 5K7GwGbdPMxwRvVHJSCdnR8exyMi2C1yMLXAf7H7RLQQ
-
-# Auto-confirm (no prompt)
-cargo run --release -- reclaim 5K7GwGbdPMxwRvVHJSCdnR8exyMi2C1yMLXAf7H7RLQQ --yes
-
-# Dry-run first
-cargo run --release -- reclaim 5K7GwGbdPMxwRvVHJSCdnR8exyMi2C1yMLXAf7H7RLQQ --dry-run
-```
-
-**Output (Dry-Run):**
-```
-Reclaiming account: 5K7GwGbdPMxwRvVHJSCdnR8exyMi2C1yMLXAf7H7RLQQ
-Eligibility: Eligible for reclaim (empty and inactive)
-Account balance: 0.005600 SOL
-
-DRY RUN: Would reclaim 0.005600 SOL from this account?  (y/N): y
-DRY RUN: No transactions will be sent
-```
-
-**Output (Real Reclaim):**
-```
-✓ Reclaim successful!
-Signature: 3pGxGX...abc123
-Reclaimed: 0.005600 SOL
-```
-
-### **Command 3: Automated Service**
-
-Run the bot continuously, checking for new eligible accounts:
-
-```bash
-# Check every hour (3600 seconds)
-cargo run --release -- auto --interval 3600
-
-# Every 10 minutes (600 seconds)
-cargo run --release -- auto --interval 600
+# Limit number of accounts to scan
+kora-reclaim scan --limit 1000
 
 # Dry-run mode
-cargo run --release -- auto --interval 3600 --dry-run
+kora-reclaim scan --dry-run
 ```
 
-**Output:**
-```
-Starting automated reclaim service...
-Interval: 3600 seconds
-Dry run: false
+Discovers sponsored accounts and checks eligibility for reclamation.
 
-[Continuous Loop]
-2024-03-15 10:00:00 - Found 245 sponsored accounts
-2024-03-15 10:00:15 - Found 8 eligible accounts
-2024-03-15 10:00:30 - Batch processing: 7 successful, 1 failed, 0.042 SOL reclaimed
-2024-03-15 11:00:00 - Found 246 sponsored accounts
-2024-03-15 11:00:15 - Found 5 eligible accounts
-2024-03-15 11:00:25 - Batch processing: 5 successful, 0 failed, 0.028 SOL reclaimed
+### `reclaim`
 
-[Press Ctrl+C to stop]
-```
-
-### **Command 4: View Statistics**
-
-See reclaim history and statistics:
+Reclaim rent from a specific account.
 
 ```bash
-# Table format (default)
-cargo run --release -- stats
+# Reclaim with confirmation prompt
+kora-reclaim reclaim <ACCOUNT_PUBKEY>
 
-# JSON format (for parsing)
-cargo run --release -- stats --format json
+# Auto-confirm (no prompt)
+kora-reclaim reclaim <ACCOUNT_PUBKEY> --yes
+
+# Dry-run (simulate without sending transactions)
+kora-reclaim reclaim <ACCOUNT_PUBKEY> --dry-run
 ```
 
-**Output (Table):**
-```
-=== Kora Rent Reclaim Statistics ===
+Executes rent reclamation for a single account.
 
-Accounts:
-  Total:      245
-  Active:     198
-  Closed:     35
-  Reclaimed:  12
+### `auto`
 
-Reclaim Operations:
-  Total:      47
-  Total SOL:  0.387 SOL
-  Average:    0.008 SOL
-
-Recent Reclaim Operations:
-════════════════════════════════════════════════════════════════════════════════════════════════════
-Timestamp              Account                                     Amount         Signature
-════════════════════════════════════════════════════════════════════════════════════════════════════
-2024-03-15 10:15:30    TokenkegQQQFSf...5aR  0.005600 SOL    3pGxGX...abc123
-2024-03-15 10:16:45    StateV1DQSm...7vM     0.006400 SOL    5mKdJJ...def456
-...
-════════════════════════════════════════════════════════════════════════════════════════════════════
-```
-
-**Output (JSON):**
-```json
-{
-  "total_accounts": 245,
-  "active_accounts": 198,
-  "closed_accounts": 35,
-  "reclaimed_accounts": 12,
-  "total_operations": 47,
-  "total_reclaimed": 387000000,
-  "avg_reclaim_amount": 8234042
-}
-```
-
----
-
-## **Configuration Reference**
-
-### **`[solana]` Section**
-
-```toml
-[solana]
-# RPC endpoint URL (can be public or paid service)
-rpc_url = "https://api.devnet.solana.com"
-
-# Network: Mainnet, Devnet, or Testnet
-network = "Devnet"
-
-# Commitment level for RPC calls
-# - "processed": Fastest but least reliable
-# - "confirmed": Good balance (recommended)
-# - "finalized": Slowest but most reliable
-commitment = "confirmed"
-
-# Delay between RPC calls in milliseconds
-# Prevents rate-limiting errors
-# Increase if you get "429 Too Many Requests"
-rate_limit_delay_ms = 100
-```
-
-### **`[kora]` Section**
-
-```toml
-[kora]
-# Public key of your Kora node's fee payer
-# This is the key that signs all sponsored transactions
-# Found in your Kora node's signers.toml
-operator_pubkey = "5VVJ18M8TTwCXDNpZRy2YmKEu3V6LSJSxZCBH3FqKkqP"
-
-# Public key of your treasury wallet
-# This is where all reclaimed SOL will be sent
-treasury_wallet = "YOUR_TREASURY_WALLET_PUBKEY_HERE"
-
-# Path to the treasury wallet's keypair JSON file
-# This private key signs reclaim transactions
-# ⚠️ Keep this file secure and backed up!
-treasury_keypair_path = "./treasury-keypair.json"
-```
-
-### **`[reclaim]` Section**
-
-```toml
-[reclaim]
-# Minimum days an account must be inactive before eligibility
-# Prevents reclaiming recently closed accounts
-# Recommended: 30+ days
-min_inactive_days = 30
-
-# Enable automatic reclaim (reserved for future use)
-auto_reclaim_enabled = false
-
-# Number of accounts to process in each batch
-# Smaller = slower but less RPC load
-# Larger = faster but more RPC load
-# Recommended: 10-50
-batch_size = 10
-
-# Delay between batches in milliseconds
-# Prevents RPC throttling
-# Recommended: 1000
-batch_delay_ms = 1000
-
-# Scan interval for auto mode in seconds
-# How often the bot checks for new eligible accounts
-# Recommended: 3600 (1 hour)
-scan_interval_seconds = 3600
-
-# Dry-run mode (highly recommended for testing!)
-# If true, simulate all reclaims without sending transactions
-# Set to false only after thorough testing
-dry_run = true
-
-# Array of account pubkeys to NEVER reclaim
-# Use for protected/important accounts
-# Example: important token mints, treasury accounts
-whitelist = [
-    # "PROTECTED_ACCOUNT_PUBKEY_HERE"
-]
-
-# Array of account pubkeys to exclude
-# Use for testing or temporary exclusions
-blacklist = []
-```
-
-### **`[database]` Section**
-
-```toml
-[database]
-# Path to SQLite database file
-# Stores account history and reclaim operations
-# Database is created automatically if it doesn't exist
-path = "./kora_reclaim.db"
-```
-
----
-
-## **Safety Mechanisms**
-
-### **1. Whitelist & Blacklist**
-
-```toml
-[reclaim]
-# Whitelist: NEVER reclaim these accounts (protected)
-whitelist = [
-    "11111111111111111111111111111111",  # System program
-    "TokenkegQQQFSf...5aR",             # Important token account
-]
-
-# Blacklist: Explicitly exclude (for testing)
-blacklist = [
-    "TestAccountPubkey...123"
-]
-```
-
-**Logic:**
-```rust
-if self.is_whitelisted(pubkey) {
-    return Ok(false); // Never reclaim
-}
-
-if self.is_blacklisted(pubkey) {
-    return Ok(false); // Explicitly skip
-}
-```
-
-### **2. Minimum Inactive Period**
-
-```toml
-[reclaim]
-# Accounts must be inactive for this many days
-# Prevents reclaiming accounts closed very recently
-min_inactive_days = 30
-```
-
-**Rationale:**
-- An account closed 1 day ago might still be useful
-- After 30 days, it's safe to assume it's abandoned
-- Gives users/apps time to realize they closed something
-
-### **3. Dry-Run Mode**
+Run automated reclaim service.
 
 ```bash
-# Simulate everything without sending transactions
-cargo run --release -- scan --dry-run
-cargo run --release -- reclaim PUBKEY --dry-run
-cargo run --release -- auto --interval 3600 --dry-run
+# Run with default interval (3600 seconds)
+kora-reclaim auto
+
+# Custom check interval
+kora-reclaim auto --interval 1800
+
+# Dry-run mode
+kora-reclaim auto --dry-run
 ```
 
-**What happens:**
-- Bot discovers and checks accounts normally
-- When it reaches the reclaim step, it:
-  - Prints what it WOULD do
-  - Returns success
-  - **Does NOT send any transactions**
-  - **Does NOT modify blockchain**
+Continuously monitors and reclaims eligible accounts at specified intervals.
 
-**Always test with `--dry-run` first!**
+### `list`
 
-### **4. Confirmation Prompts**
+List tracked accounts.
 
 ```bash
-# Interactive prompt
-cargo run -- reclaim PUBKEY
+# List all accounts
+kora-reclaim list
 
-Reclaim 0.005600 SOL from this account? (y/N): y
+# Filter by status (active, closed, reclaimed, all)
+kora-reclaim list --status closed
+
+# Output as JSON
+kora-reclaim list --format json
+
+# Show detailed information
+kora-reclaim list --detailed
 ```
 
-**Skip with `--yes`:**
-```bash
-# Auto-confirm (for automation)
-cargo run -- reclaim PUBKEY --yes
-```
+Displays accounts tracked by the bot with filtering options.
 
-### **5. Comprehensive Logging**
+### `stats`
 
-```bash
-# Enable detailed logging
-RUST_LOG=kora_reclaim=debug cargo run --release -- scan --verbose
-```
-
-**Logs show:**
-- Every RPC call made
-- Every account discovered
-- Eligibility checks and reasons for rejection
-- Transaction signatures and results
-- Errors and warnings with full context
-
-### **6. Transaction Retry Logic**
-
-```rust
-// Automatic retry with exponential backoff
-// Attempt 1: Send txn
-// Attempt 2: Wait 2 seconds, retry
-// Attempt 3: Wait 4 seconds, retry
-// Attempt 4: Wait 8 seconds, retry
-// If all fail: Log error and continue
-```
-
-### **7. Rate Limiting**
-
-```toml
-[solana]
-rate_limit_delay_ms = 100  # 100ms between RPC calls
-```
-
-Prevents:
-- RPC server throttling (429 Too Many Requests)
-- Network overload
-- Account for API rate limits
-
-### **8. Database Audit Trail**
-
-Every reclaim operation is recorded:
-```
-account_pubkey | reclaimed_amount | tx_signature | timestamp | reason
-```
-
-Query history anytime:
-```bash
-cargo run -- stats
-```
-
----
-
-## **Performance & Optimization**
-
-### **RPC Efficiency**
-
-| Method | Cost | Frequency |
-|--------|------|-----------|
-| `getSignaturesForAddress` | 1 RPC call | Once per scan (pagination) |
-| `getTransaction` | 1 RPC call per txn | ~1000 per scan |
-| `getAccount` | 1 RPC call | Per eligible account |
-| `getBalance` | 1 RPC call | Per account check |
-
-**Optimization:**
-```rust
-// Batch multiple account checks
-get_multiple_accounts(&[pubkey1, pubkey2, ...])  // 1 call for 100 accounts
-```
-
-### **Limiting Scan Scope**
-
-Don't scan all Solana history (billions of txns). Instead:
+Show statistics and reports.
 
 ```bash
-# Scan last 1000 transactions
-cargo run -- scan --limit 1000
+# Display statistics table
+kora-reclaim stats
 
-# Scan last 5000 (for larger Kora ops)
-cargo run -- scan --limit 5000
+# Output as JSON
+kora-reclaim stats --format json
+
+# Show only total reclaimed amount
+kora-reclaim stats --total
 ```
 
-**Rationale:**
-- Recent accounts are most likely to be closeable
-- Reduces RPC cost and time
-- Still catches all relevant accounts
+Provides summary statistics on reclaimed accounts and SOL.
 
-### **Incremental Scanning** (Future Enhancement)
+### `checkpoints`
 
-```rust
-// Could use 'until' signature parameter to fetch only NEW txns
-getSignaturesForAddress(fee_payer, until=last_scanned_signature)
-```
-
-This would:
-- Fetch only new transactions since last run
-- Reduce RPC calls from O(n) to O(delta)
-- Enable hourly auto-scans with minimal overhead
-
-### **Database Indexing**
-
-```sql
-CREATE INDEX idx_status ON sponsored_accounts(status)
-CREATE INDEX idx_created_at ON sponsored_accounts(created_at)
-```
-
-Speeds up:
-- Finding active vs. closed accounts
-- Filtering by creation date
-- Statistics queries
-
----
-
-## **Troubleshooting**
-
-### **Problem: "Failed to load configuration"**
-
-**Cause:** Config file missing or invalid syntax
-
-**Fix:**
-```bash
-# Ensure config.toml exists
-ls -la config.toml
-
-# Check TOML syntax
-cat config.toml
-
-# Validate with online TOML tool if needed
-```
-
----
-
-### **Problem: "Invalid operator pubkey"**
-
-**Cause:** Malformed or incorrect pubkey
-
-**Fix:**
-```bash
-# Verify pubkey is valid base58 (44 characters)
-# Should be something like: 5VVJ18M8TTwCXDNpZRy2YmKEu3V6LSJSxZCBH3FqKkqP
-
-# Get correct pubkey from Kora:
-# Look in signers.toml or Kora startup logs
-```
-
----
-
-### **Problem: "Failed to read keypair file"**
-
-**Cause:** Treasury keypair path is wrong or file is corrupted
-
-**Fix:**
-```bash
-# Check file exists
-ls -la ./treasury-keypair.json
-
-# Verify it's valid JSON
-cat ./treasury-keypair.json | jq .
-
-# If corrupted, regenerate:
-solana-keygen new --outfile treasury-keypair.json --force
-
-# Or export from existing wallet:
-cp ~/.config/solana/id.json ./treasury-keypair.json
-```
-
----
-
-### **Problem: "RPC rate limit errors"**
-
-**Cause:** Too many RPC calls per second
-
-**Fix:**
-```toml
-# Increase delay between calls
-[solana]
-rate_limit_delay_ms = 500  # Was 100, now 500ms
-
-# Or use a paid RPC service (Helius, QuickNode, etc.)
-rpc_url = "https://api.helius.xyz/v0?api-key=YOUR_KEY"
-```
-
----
-
-### **Problem: "No eligible accounts found"**
-
-**Cause:** All accounts are either active or too new
-
-**Possible fixes:**
+Show checkpoint information and scanning state.
 
 ```bash
-# Check if we're even discovering accounts
-cargo run -- scan --verbose
-
-# If 0 accounts found:
-# - Verify operator_pubkey is correct
-# - Check fee payer actually sponsored txns
-# - Try devnet with test accounts first
-
-# If accounts found but none eligible:
-# - Lower min_inactive_days temporarily
-# - Check account details in database
+kora-reclaim checkpoints
 ```
 
----
+Displays the current scanning checkpoint and state information.
 
-### **Problem: "Account not eligible for reclaim"**
+### `reset`
 
-**Cause:** Account doesn't meet eligibility criteria
+Reset scanning checkpoints (force full rescan on next run).
 
-**Fix:**
 ```bash
-# Get detailed eligibility reason:
-cargo run -- reclaim PUBKEY
+# Reset with confirmation prompt
+kora-reclaim reset
 
-# Output will show why:
-# "Account has recent activity"
-# "Account still has data"
-# "Account needs X more days of inactivity"
+# Auto-confirm
+kora-reclaim reset --yes
 ```
 
----
+Clears scanning checkpoints to force a complete rescan.
 
-### **Problem: "Transaction failed"**
+### `passive-check`
 
-**Cause:** Reclaim transaction was rejected by the blockchain
+Perform a passive eligibility check without reclaiming.
 
-**Possible reasons:**
-- Invalid treasurer keypair (can't sign)
-- Account is not actually closeable
-- SOL was already reclaimed
-- Network congestion
-
-**Fix:**
 ```bash
-# Always test with --dry-run first
-cargo run -- reclaim PUBKEY --dry-run
-
-# Check account status
-cargo run -- scan --verbose | grep PUBKEY
-
-# Verify treasury keypair is correct
-# Check logs for detailed error message
+kora-reclaim passive-check
 ```
 
----
+Checks account eligibility without executing reclamation transactions.
 
-## **Architecture Diagrams Summary**
+### `daily-summary`
 
-### **High-Level Data Flow**
+Generate a daily summary report.
 
-```mermaid
-graph LR
-    A["Blockchain"] -->|"Txn History"| B["RPC Client"]
-    B -->|"Signatures"| C["Account Discovery"]
-    C -->|"Created Accounts"| D["Kora Monitor"]
-    D -->|"Eligible Candidates"| E["Eligibility Checker"]
-    E -->|"Ready to Reclaim"| F["Reclaim Engine"]
-    F -->|"Transactions"| G["RPC Client"]
-    G -->|"Sends to Chain"| A
-    D -->|"Store"| H["Database"]
-    E -->|"Update"| H
-    F -->|"Log Results"| H
-    H -->|"Query"| I["Statistics"]
-    
-    style C fill:#A5D6A7
-    style D fill:#64B5F6
-    style E fill:#FFE082
-    style F fill:#FF7043
-    style H fill:#F8BBD0
-    style I fill:#E1BEE7
+```bash
+kora-reclaim daily-summary
 ```
 
-### **State Machine: Account Lifecycle**
+Produces a summary of daily reclamation activity.
 
-```mermaid
-stateDiagram-v2
-    [*] --> Active: Sponsored<br/>by Kora
-    Active --> Active: User interacts
-    Active --> Closed: User closes/<br/>Program deletes
-    Closed --> Abandoned: No activity<br/>for 30 days
-    Abandoned --> Reclaimed: Bot sends<br/>reclaim txn
-    Reclaimed --> [*]: SOL returned<br/>to treasury
-    
-    Active --> Monitored: Bot discovers
-    Monitored --> Eligible: Closed OR<br/>empty+inactive
-    Eligible --> Reclaimed
+### `init`
+
+Initialize database and configuration.
+
+```bash
+kora-reclaim init
 ```
 
----
+Sets up the database and validates configuration. Run this before first use.
 
-## **Key Takeaways**
+### `telegram`
 
-| Concept | Key Point |
-|---------|-----------|
-| **Rent Locking** | Solana requires accounts to hold SOL = data size × rent rate × 2 years |
-| **Kora's Role** | Pays rent upfront when creating accounts, locking SOL until account closure |
-| **Discovery** | Bot scans Kora fee payer's transaction history to find all sponsored accounts |
-| **Eligibility** | Accounts are eligible if: closed, empty+inactive, or old enough |
-| **Reclamation** | Bot builds transactions to close accounts and return SOL to treasury |
-| **Safety** | Dry-run, whitelists, minimum inactivity period, confirmation prompts |
-| **Automation** | Bot can run continuously (auto mode) or on-demand (CLI commands) |
-| **Auditing** | Database tracks all reclaim operations for transparency |
+Start Telegram bot interface.
 
----
+```bash
+kora-reclaim telegram
+```
 
-## **Next Steps**
+Launches the Telegram bot for remote monitoring and control.
 
-1. **Clone the repository**
-   ```bash
-   git clone <repo>
-   cd kora-rent-reclaim-bot
-   ```
+## Global Options
 
-2. **Install Rust** (if needed)
-   ```bash
-   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-   ```
+All commands support:
 
-3. **Configure**
-   ```bash
-   cp config.toml my-config.toml
-   # Edit my-config.toml with your values
-   ```
+- `--config <PATH>` - Path to configuration file (default: `config.toml`)
 
-4. **Test with dry-run**
-   ```bash
-   cargo run --release -- scan --verbose --dry-run
-   ```
+Example:
 
-5. **Deploy for production**
-   - Set `dry_run = false` only after thorough testing
-   - Use whitelists to protect important accounts
-   - Run in `auto` mode with appropriate interval
-   - Monitor logs regularly
-
----
-
-## **Additional Resources**
-
-- [Solana Docs: Rent](https://docs.solana.com/developing/intro/rent)
-- [Kora Launch Docs](https://launch.solana.com/docs/kora/)
-- [Solana JSON-RPC API](https://docs.solana.com/api/http)
-- [SPL Token Program](https://github.com/solana-labs/solana-program-library)
-
----
-
-**Created by:** Kora Rent-Reclaim Bot Contributors  
-**License:** MIT/Apache 2.0  
-**Version:** 1.0.0
+```bash
+kora-reclaim --config my-config.toml scan
+```
