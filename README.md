@@ -2,6 +2,18 @@
 
 Automated rent reclamation for Kora-sponsored Solana accounts.
 
+> [!CAUTION]
+> **GitHub Actions Build Failure**
+> 
+> The automated GitHub workflow builds are currently failing due to billing issues. Pre-built binaries are not available through GitHub Actions.
+> 
+> **To build for different platforms:**
+> - Use the workflow configuration in [`.github/workflows/release.yml`](.github/workflows/release.yml) as a reference
+> - Build locally using `cargo build --release --target <TARGET_TRIPLE>`
+> - Supported targets: `x86_64-unknown-linux-gnu`, `x86_64-pc-windows-msvc`, `x86_64-apple-darwin`, `aarch64-apple-darwin`
+> 
+> See the [Build](#build) section below for local build instructions.
+
 ## Overview
 
 This bot monitors, tracks, and reclaims SOL locked as rent in accounts created through Kora transaction sponsorship. It provides operators with visibility into sponsored accounts and automates the recovery of rent from closed or inactive accounts.
