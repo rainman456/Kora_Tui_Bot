@@ -3,16 +3,9 @@
   "version": "1.0.0",
   "description": "",
   "scripts": {
-    "start": "tsx src/quick-start.ts",
-    "full-demo": "tsx src/full-demo.ts",
     "init-env": "tsx src/setup.ts",
-    "empty": "tsx src/empty.ts",
     "export": "tsx src/export-key.ts",
-    "diag":"tsx src/diagnose.ts",
-     "check":"tsx src/fix.ts",
      "simple":"tsx src/simple.ts",
-     "direct":"tsx src/direct.ts",
-    "ca": "tsx src/set-close-authority.ts",
     "typecheck": "tsc --noEmit"
   },
   "keywords": [
