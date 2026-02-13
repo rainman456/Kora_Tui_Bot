@@ -62,25 +62,33 @@ The bot is configured using `config.toml`. See [src/config.rs](src/config.rs) fo
 ### Example Configuration
 
 ```toml
+#set 
 [solana]
-rpc_url = "https://api.devnet.solana.com"
+# Solana RPC endpoint (use localnet for testing)
+#rpc_url = "https://api.devnet.solana.com"
+rpc_url = "http://localhost:8899"
+# Network: "Mainnet", "Devnet", or "Testnet"
 network = "Devnet"
 commitment = "confirmed"
 rate_limit_delay_ms = 100
 
 [kora]
 # Kora operator (fee payer) public key from your Kora node's signers.toml
+#for testing get this from the env file in the kora test client script from here:
+# Solana Address: 
+#KORA_PRIVATE_KEY
 operator_pubkey = "5VVJ18M8TTwCXDNpZRy2YmKEu3V6LSJSxZCBH3FqKkqP"
 
 # Treasury wallet where reclaimed SOL will be sent
-treasury_wallet = "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU"
+treasury_wallet = "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU"  can be anything you want
 
 # Path to treasury keypair JSON (must own this keypair to sign reclaim transactions)
-treasury_keypair_path = "./treasury-keypair.json"
+#can be anything you want
+treasury_keypair_path = "./treasury-keypair.json" 
 
 [reclaim]
-# Minimum days an account must be inactive before reclaim
-min_inactive_days = 30
+# Minimum days an account must be inactive before reclaim(set to 0 for testing on localnet)
+min_inactive_days = 30   
 
 # Enable automatic reclaim mode
 auto_reclaim_enabled = false
@@ -92,7 +100,8 @@ batch_size = 10
 batch_delay_ms = 1000
 
 # Dry run mode: simulate reclaims without sending transactions
-dry_run = true
+#make sure to set false when testing
+dry_run = true 
 
 # Protected accounts (never reclaim)
 whitelist = []
@@ -175,6 +184,10 @@ Update `config.toml` with these values:
 operator_pubkey = "<KORA_PUBLIC_KEY_FROM_EXPORT>"
 treasury_wallet = "<YOUR_TREASURY_PUBLIC_KEY>"
 treasury_keypair_path = "./treasury-keypair.json"
+
+
+min_inactive_days = 0
+
 ```
 
 ## Bot Logic & Internal Design
