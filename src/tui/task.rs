@@ -259,8 +259,8 @@ impl TaskManager {
     
     /// Spawn a dry-run task
     pub fn spawn_dry_run(&self, action_tx: UnboundedSender<Action>, account: String) {
-        let reclaim_engine = match self.reclaim_engine.clone() {
-            Some(engine) => engine,
+        let reclaim_engine = match self.reclaim_engine.as_ref() {
+            Some(engine) => engine.for_dry_run(),
             None => {
                 let _ = action_tx.send(Action::DryRunFailed {
                     account,
@@ -316,8 +316,8 @@ impl TaskManager {
     
     /// Spawn a reclaim execution task
     pub fn spawn_reclaim(&self, action_tx: UnboundedSender<Action>, account: String) {
-        let reclaim_engine = match self.reclaim_engine.clone() {
-            Some(engine) => engine,
+        let reclaim_engine = match self.reclaim_engine.as_ref() {
+            Some(engine) => engine.for_execution(),
             None => {
                 let _ = action_tx.send(Action::ReclaimFailed {
                     account,
@@ -360,6 +360,12 @@ impl TaskManager {
         
         let result = reclaim_engine.reclaim_account(&pubkey, &account_type).await?;
         
+        if result.dry_run {
+            return Err(anyhow::anyhow!(
+                "Execution path returned a dry-run result. Transaction was not submitted."
+            ));
+        }
+
         let signature = result.signature
             .ok_or_else(|| anyhow::anyhow!("No signature returned"))?;
         

@@ -43,6 +43,20 @@ impl ReclaimEngine {
         }
     }
 
+    /// Return a clone configured explicitly for dry-run simulation mode.
+    pub fn for_dry_run(&self) -> Self {
+        let mut engine = self.clone();
+        engine.dry_run = true;
+        engine
+    }
+
+    /// Return a clone configured explicitly for on-chain execution mode.
+    pub fn for_execution(&self) -> Self {
+        let mut engine = self.clone();
+        engine.dry_run = false;
+        engine
+    }
+
     /// Determine account type from on-chain account data.
     pub async fn determine_account_type(&self, pubkey: &Pubkey) -> Result<AccountType> {
         let account = self.rpc_client.get_account(pubkey).await?;
