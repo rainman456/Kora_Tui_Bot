@@ -159,11 +159,7 @@ pub struct State {
     pub whitelist: std::collections::HashSet<String>,
     
     // Summary metrics
-    pub total_accounts: usize,
-    pub total_locked_sol: f64,
-    pub eligible_accounts: usize,
     pub total_reclaimed_sol: f64,
-    pub at_risk_sol: f64,
     
     // System state
     pub rpc_health: RpcHealth,
@@ -196,11 +192,7 @@ impl State {
             activity_log: VecDeque::with_capacity(MAX_LOG_ENTRIES),
             dry_run_cache: std::collections::HashMap::new(),
             whitelist: std::collections::HashSet::new(),
-            total_accounts: 0,
-            total_locked_sol: 0.0,
-            eligible_accounts: 0,
             total_reclaimed_sol: 0.0,
-            at_risk_sol: 0.0,
             rpc_health: RpcHealth {
                 status: HealthStatus::Healthy,
                 latency_ms: 0,
@@ -237,12 +229,10 @@ impl State {
             
             Action::AccountFound(account) => {
                 self.accounts.push(account);
-                self.recalculate_metrics();
             }
 
             Action::ScanResults(accounts) => {
                 self.accounts = accounts;
-                self.recalculate_metrics();
                 if self.selected_index >= self.accounts.len() {
                     self.selected_index = 0;
                 }
@@ -261,9 +251,6 @@ impl State {
             Action::ScanFinished { total, eligible } => {
                 self.is_scanning = false;
                 self.is_cancelling = false;
-                self.total_accounts = total;
-                self.eligible_accounts = eligible;
-                self.recalculate_metrics();
                 self.add_log(
                     LogLevel::Success,
                     &format!("Scan complete: {} accounts, {} eligible", total, eligible)
@@ -273,9 +260,6 @@ impl State {
             Action::ScanCancelled { scanned, eligible } => {
                 self.is_scanning = false;
                 self.is_cancelling = false;
-                self.total_accounts = scanned;
-                self.eligible_accounts = eligible;
-                self.recalculate_metrics();
                 self.add_log(
                     LogLevel::Warning,
                     &format!("Scan cancelled: {} accounts scanned, {} eligible", scanned, eligible)
@@ -330,10 +314,9 @@ impl State {
                 if let Some(acc) = self.accounts.iter_mut().find(|a| a.address.to_string() == result.account) {
                     acc.status = AccountStatus::Reclaimed;
                 }
-                
+
                 self.total_reclaimed_sol += result.amount_sol;
-                self.recalculate_metrics();
-                
+
                 self.add_log(
                     LogLevel::Success,
                     &format!(
@@ -416,6 +399,30 @@ impl State {
             })
             .unwrap_or(false)
     }
+
+    pub fn summary_metrics(&self) -> SummaryMetrics {
+        let total_accounts = self.accounts.len();
+        let total_locked_sol = self.accounts.iter().map(|a| a.rent_sol).sum();
+        let eligible_accounts = self
+            .accounts
+            .iter()
+            .filter(|a| a.status == AccountStatus::Eligible)
+            .count();
+        let at_risk_sol = self
+            .accounts
+            .iter()
+            .filter(|a| a.status == AccountStatus::Eligible && a.age_days > 30)
+            .map(|a| a.rent_sol)
+            .sum();
+
+        SummaryMetrics {
+            total_accounts,
+            total_locked_sol,
+            eligible_accounts,
+            total_reclaimed_sol: self.total_reclaimed_sol,
+            at_risk_sol,
+        }
+    }
     
     /// Navigation helpers
     pub fn select_next(&mut self) {
@@ -446,17 +453,12 @@ impl State {
         self.activity_log.push_front(entry);
     }
     
-    fn recalculate_metrics(&mut self) {
-        self.total_accounts = self.accounts.len();
-        self.total_locked_sol = self.accounts.iter()
-            .map(|a| a.rent_sol)
-            .sum();
-        self.eligible_accounts = self.accounts.iter()
-            .filter(|a| a.status == AccountStatus::Eligible)
-            .count();
-        self.at_risk_sol = self.accounts.iter()
-            .filter(|a| a.status == AccountStatus::Eligible && a.age_days > 30)
-            .map(|a| a.rent_sol)
-            .sum();
-    }
+}
+
+pub struct SummaryMetrics {
+    pub total_accounts: usize,
+    pub total_locked_sol: f64,
+    pub eligible_accounts: usize,
+    pub total_reclaimed_sol: f64,
+    pub at_risk_sol: f64,
 }

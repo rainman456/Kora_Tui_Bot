@@ -141,24 +141,25 @@ fn render_header(f: &mut Frame, area: Rect, state: &State) {
 
 /// Summary Bar: 5 overview cards
 fn render_summary_bar(f: &mut Frame, area: Rect, state: &State) {
+    let summary = state.summary_metrics();
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(20); 5])
         .split(area);
     
     // Calculate percentages for visual bars
-    let eligible_pct = if state.total_accounts > 0 {
-        (state.eligible_accounts as f64 / state.total_accounts as f64 * 100.0) as u16
+    let eligible_pct = if summary.total_accounts > 0 {
+        (summary.eligible_accounts as f64 / summary.total_accounts as f64 * 100.0) as u16
     } else {
         0
     };
     
     let cards = [
-        ("📊 TOTAL", state.total_accounts.to_string(), "".to_string(), COLOR_PRIMARY, COLOR_MUTED),
-        ("🔒 LOCKED", format!("{:.4} SOL", state.total_locked_sol), "".to_string(), COLOR_WARNING, COLOR_MUTED),
-        ("✓ ELIGIBLE", state.eligible_accounts.to_string(), format!("{}%", eligible_pct), COLOR_SUCCESS, COLOR_SUCCESS),
-        ("💰 RECLAIMED", format!("{:.4} SOL", state.total_reclaimed_sol), "".to_string(), COLOR_SUCCESS, COLOR_SUCCESS),
-        ("⚠ AT-RISK", format!("{:.4} SOL", state.at_risk_sol), ">30d".to_string(), COLOR_DANGER, COLOR_DANGER),
+        ("📊 TOTAL", summary.total_accounts.to_string(), "".to_string(), COLOR_PRIMARY, COLOR_MUTED),
+        ("🔒 LOCKED", format!("{:.4} SOL", summary.total_locked_sol), "".to_string(), COLOR_WARNING, COLOR_MUTED),
+        ("✓ ELIGIBLE", summary.eligible_accounts.to_string(), format!("{}%", eligible_pct), COLOR_SUCCESS, COLOR_SUCCESS),
+        ("💰 RECLAIMED", format!("{:.4} SOL", summary.total_reclaimed_sol), "".to_string(), COLOR_SUCCESS, COLOR_SUCCESS),
+        ("⚠ AT-RISK", format!("{:.4} SOL", summary.at_risk_sol), ">30d".to_string(), COLOR_DANGER, COLOR_DANGER),
     ];
     
     for (i, (label, value, subtitle, fg_color, border_color)) in cards.iter().enumerate() {
