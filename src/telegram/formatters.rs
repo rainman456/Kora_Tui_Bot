@@ -1,8 +1,14 @@
 use crate::solana::rent::RentCalculator;
+use teloxide::utils::markdown;
 
 /// Format SOL for Telegram (no ANSI colors)
 pub fn format_sol_tg(lamports: u64) -> String {
     format!("{:.9} SOL", RentCalculator::lamports_to_sol(lamports))
+}
+
+/// Escape arbitrary text for safe MarkdownV2 transport.
+pub fn escape_markdown_v2(text: &str) -> String {
+    markdown::escape(text)
 }
 
 /// Format pubkey for Telegram with monospace
@@ -11,7 +17,7 @@ pub fn format_pubkey_tg(pubkey: &str) -> String {
     if pubkey.len() <= 12 {
         format!("`{}`", pubkey)
     } else {
-        format!("`{}...{}`", &pubkey[..8], &pubkey[pubkey.len()-8..])
+        format!("`{}...{}`", &pubkey[..8], &pubkey[pubkey.len() - 8..])
     }
 }
 
@@ -21,7 +27,7 @@ pub fn format_account_tg(
     pubkey: &str,
     balance: u64,
     created: &chrono::DateTime<chrono::Utc>,
-    status: &str
+    status: &str,
 ) -> String {
     format!(
         "🔹 {}\n💰 {}\n📅 {}\n📊 {}",

@@ -1,29 +1,40 @@
 // src/telegram/commands.rs - Fixed with database persistence
 
-use teloxide::prelude::*;
-use teloxide::utils::command::BotCommands;
-use std::sync::Arc;
-use crate::telegram::bot::{BotState, Command};
 use crate::kora::KoraMonitor;
 use crate::reclaim::EligibilityChecker;
+use crate::storage::models::{AccountStatus, SponsoredAccount};
+use crate::telegram::bot::{BotState, Command};
+use crate::telegram::formatters::{escape_markdown_v2, format_sol_tg};
 use crate::utils;
-use crate::telegram::formatters::format_sol_tg;
-use crate::storage::models::{SponsoredAccount, AccountStatus}; 
-use tracing::{info, error}; 
+use std::sync::Arc;
+use teloxide::prelude::*;
+use teloxide::utils::command::BotCommands;
+use tracing::{error, info};
+
+async fn send_markdown_v2_safe(bot: &Bot, chat_id: ChatId, text: &str) -> ResponseResult<()> {
+    bot.send_message(chat_id, escape_markdown_v2(text))
+        .parse_mode(teloxide::types::ParseMode::MarkdownV2)
+        .await?;
+    Ok(())
+}
 
 /// Main command handler
 pub async fn handle_command(
-    bot: Bot, 
-    msg: Message, 
-    cmd: Command, 
-    state: Arc<BotState>
+    bot: Bot,
+    msg: Message,
+    cmd: Command,
+    state: Arc<BotState>,
 ) -> ResponseResult<()> {
     let user_id = msg.from().map(|u| u.id.0).unwrap_or(0);
     if let Some(telegram_config) = &state.config.telegram {
-        if !telegram_config.authorized_users.is_empty() 
-            && !telegram_config.authorized_users.contains(&user_id) {
-            bot.send_message(msg.chat.id, "⛔ Authorization failed. You are not authorized to use this bot.")
-                .await?;
+        if !telegram_config.authorized_users.is_empty()
+            && !telegram_config.authorized_users.contains(&user_id)
+        {
+            bot.send_message(
+                msg.chat.id,
+                "⛔ Authorization failed. You are not authorized to use this bot.",
+            )
+            .await?;
             return Ok(());
         }
     }
@@ -43,17 +54,18 @@ pub async fn handle_command(
 }
 
 async fn handle_start(bot: Bot, msg: Message) -> ResponseResult<()> {
-    bot.send_message(
-        msg.chat.id, 
-        "👋 *Welcome to Kora Rent Reclaim Bot*\n\nI can help you monitor and reclaim rent from sponsored accounts\\.\n\nUse /help to see available commands\\.",
+    send_markdown_v2_safe(
+        &bot,
+        msg.chat.id,
+        "👋 *Welcome to Kora Rent Reclaim Bot*\n\nI can help you monitor and reclaim rent from sponsored accounts.\n\nUse /help to see available commands.",
     )
-    .parse_mode(teloxide::types::ParseMode::MarkdownV2)
     .await?;
     Ok(())
 }
 
 async fn handle_help(bot: Bot, msg: Message) -> ResponseResult<()> {
-    bot.send_message(msg.chat.id, Command::descriptions().to_string()).await?;
+    bot.send_message(msg.chat.id, Command::descriptions().to_string())
+        .await?;
     Ok(())
 }
 
@@ -61,39 +73,46 @@ async fn handle_status(bot: Bot, msg: Message, state: Arc<BotState>) -> Response
     let config = &state.config;
     let status_msg = format!(
         "🟢 *Bot Status: Online*\n\nNetwork: {}\nMode: {}\nDry Run: {}\nOperator: `{}`",
-        match config.solana.network { 
+        match config.solana.network {
             crate::config::Network::Mainnet => "Mainnet",
             crate::config::Network::Devnet => "Devnet",
             crate::config::Network::Testnet => "Testnet",
         },
-        if config.reclaim.auto_reclaim_enabled { "Auto" } else { "Manual" },
+        if config.reclaim.auto_reclaim_enabled {
+            "Auto"
+        } else {
+            "Manual"
+        },
         config.reclaim.dry_run,
         utils::format_pubkey(&config.kora.operator_pubkey)
     );
-    bot.send_message(msg.chat.id, status_msg)
-        .parse_mode(teloxide::types::ParseMode::MarkdownV2)
-        .await?;
+    send_markdown_v2_safe(&bot, msg.chat.id, &status_msg).await?;
     Ok(())
 }
 
 // ✅ CRITICAL FIX: Persist scan results to database
 async fn handle_scan(bot: Bot, msg: Message, state: Arc<BotState>) -> ResponseResult<()> {
-    bot.send_message(msg.chat.id, "🔍 Scanning for sponsored accounts... This may take a moment.").await?;
-    
+    bot.send_message(
+        msg.chat.id,
+        "🔍 Scanning for sponsored accounts... This may take a moment.",
+    )
+    .await?;
+
     let operator_pubkey = match state.config.operator_pubkey() {
         Ok(pk) => pk,
         Err(e) => {
-            bot.send_message(msg.chat.id, format!("❌ Error: {}", e)).await?;
+            bot.send_message(msg.chat.id, format!("❌ Error: {}", e))
+                .await?;
             return Ok(());
         }
     };
-    
+
     let monitor = KoraMonitor::new(state.rpc_client.clone(), operator_pubkey);
-    
+
     match monitor.get_sponsored_accounts(100).await {
         Ok(accounts) => {
             let count = accounts.len();
-            
+
             // ✅ FIX: Convert to database models and persist
             let db_accounts: Vec<SponsoredAccount> = accounts
                 .iter()
@@ -110,151 +129,167 @@ async fn handle_scan(bot: Bot, msg: Message, state: Arc<BotState>) -> ResponseRe
                     reclaim_strategy: None,
                 })
                 .collect();
-            
+
             // ✅ FIX: Save to database
             let db = state.database.lock().await;
             match db.save_accounts_batch(&db_accounts) {
                 Ok(saved_count) => {
                     info!("Telegram /scan saved {} accounts to database", saved_count);
-                    
+
                     // ✅ FIX: Update checkpoint
                     if let Some(latest_account) = accounts.first() {
                         let _ = db.save_last_processed_signature(
-                            &latest_account.creation_signature.to_string()
+                            &latest_account.creation_signature.to_string(),
                         );
                         let _ = db.save_last_processed_slot(latest_account.creation_slot);
                     }
-                    
-                    bot.send_message(
+
+                    send_markdown_v2_safe(
+                        &bot,
                         msg.chat.id,
-                        format!(
-                            "✅ Scan complete\\!\n\n\
+                        &format!(
+                            "✅ Scan complete!\n\n\
                              Found: {} accounts\n\
                              Saved: {} to database\n\n\
-                             Use /accounts to view them\\.",
+                             Use /accounts to view them.",
                             count, saved_count
-                        )
+                        ),
                     )
-                    .parse_mode(teloxide::types::ParseMode::MarkdownV2)
                     .await?;
                 }
                 Err(e) => {
                     error!("Failed to save accounts from Telegram scan: {}", e);
-                    bot.send_message(
+                    send_markdown_v2_safe(
+                        &bot,
                         msg.chat.id,
-                        format!(
+                        &format!(
                             "⚠️ Found {} accounts but failed to save to database: {}\n\n\
-                             Accounts were not persisted\\.",
+                             Accounts were not persisted.",
                             count, e
-                        )
+                        ),
                     )
-                    .parse_mode(teloxide::types::ParseMode::MarkdownV2)
                     .await?;
                 }
             }
         }
         Err(e) => {
             error!("Telegram /scan failed: {}", e);
-            bot.send_message(msg.chat.id, format!("❌ Scan failed: {}", e)).await?;
+            bot.send_message(msg.chat.id, format!("❌ Scan failed: {}", e))
+                .await?;
         }
     }
     Ok(())
 }
 
 async fn handle_accounts(bot: Bot, msg: Message, state: Arc<BotState>) -> ResponseResult<()> {
-    bot.send_message(msg.chat.id, "📋 Fetching account list...").await?;
-    
+    bot.send_message(msg.chat.id, "📋 Fetching account list...")
+        .await?;
+
     let db = state.database.lock().await;
     match db.get_active_accounts() {
         Ok(accounts) => {
             if accounts.is_empty() {
-                bot.send_message(msg.chat.id, "No active accounts found in database. Run /scan first.").await?;
+                bot.send_message(
+                    msg.chat.id,
+                    "No active accounts found in database. Run /scan first.",
+                )
+                .await?;
             } else {
                 let count = accounts.len();
                 let display_limit = std::cmp::min(count, 5);
                 let mut response = format!("📋 *Active Accounts* ({})\\n\\n", count);
-                
+
                 for acc in &accounts[..display_limit] {
-                    response.push_str(&format!("• `{}`\\n  Rent: {} lamports\\n\\n", acc.pubkey, acc.rent_lamports));
+                    response.push_str(&format!(
+                        "• `{}`\\n  Rent: {} lamports\\n\\n",
+                        acc.pubkey, acc.rent_lamports
+                    ));
                 }
-                
+
                 if count > display_limit {
                     response.push_str(&format!("_\\.\\.\\.and {} more_", count - display_limit));
                 }
-                
-                bot.send_message(msg.chat.id, response)
-                    .parse_mode(teloxide::types::ParseMode::MarkdownV2)
-                    .await?;
+
+                send_markdown_v2_safe(&bot, msg.chat.id, &response).await?;
             }
         }
         Err(e) => {
-            bot.send_message(msg.chat.id, format!("❌ Database error: {}", e)).await?;
+            bot.send_message(msg.chat.id, format!("❌ Database error: {}", e))
+                .await?;
         }
     }
     Ok(())
 }
 
 async fn handle_closed(bot: Bot, msg: Message, state: Arc<BotState>) -> ResponseResult<()> {
-    bot.send_message(msg.chat.id, "📋 Fetching closed accounts...").await?;
-    
+    bot.send_message(msg.chat.id, "📋 Fetching closed accounts...")
+        .await?;
+
     let db = state.database.lock().await;
     match db.get_closed_accounts() {
         Ok(accounts) => {
             if accounts.is_empty() {
-                bot.send_message(msg.chat.id, "No closed accounts found in database.").await?;
+                bot.send_message(msg.chat.id, "No closed accounts found in database.")
+                    .await?;
             } else {
                 let count = accounts.len();
                 let display_limit = std::cmp::min(count, 5);
                 let mut response = format!("🔒 *Closed Accounts* ({})\\n\\n", count);
-                
+
                 for acc in &accounts[..display_limit] {
-                    response.push_str(&format!("• `{}`\\n  Rent: {} lamports\\n\\n", acc.pubkey, acc.rent_lamports));
+                    response.push_str(&format!(
+                        "• `{}`\\n  Rent: {} lamports\\n\\n",
+                        acc.pubkey, acc.rent_lamports
+                    ));
                 }
-                
+
                 if count > display_limit {
                     response.push_str(&format!("_\\.\\.\\.and {} more_", count - display_limit));
                 }
-                
-                bot.send_message(msg.chat.id, response)
-                    .parse_mode(teloxide::types::ParseMode::MarkdownV2)
-                    .await?;
+
+                send_markdown_v2_safe(&bot, msg.chat.id, &response).await?;
             }
         }
         Err(e) => {
-            bot.send_message(msg.chat.id, format!("❌ Database error: {}", e)).await?;
+            bot.send_message(msg.chat.id, format!("❌ Database error: {}", e))
+                .await?;
         }
     }
     Ok(())
 }
 
 async fn handle_reclaimed(bot: Bot, msg: Message, state: Arc<BotState>) -> ResponseResult<()> {
-    bot.send_message(msg.chat.id, "📋 Fetching reclaimed accounts...").await?;
-    
+    bot.send_message(msg.chat.id, "📋 Fetching reclaimed accounts...")
+        .await?;
+
     let db = state.database.lock().await;
     match db.get_reclaimed_accounts() {
         Ok(accounts) => {
             if accounts.is_empty() {
-                bot.send_message(msg.chat.id, "No reclaimed accounts found in database.").await?;
+                bot.send_message(msg.chat.id, "No reclaimed accounts found in database.")
+                    .await?;
             } else {
                 let count = accounts.len();
                 let display_limit = std::cmp::min(count, 5);
                 let mut response = format!("✅ *Reclaimed Accounts* ({})\\n\\n", count);
-                
+
                 for acc in &accounts[..display_limit] {
-                    response.push_str(&format!("• `{}`\\n  Rent: {} lamports\\n\\n", acc.pubkey, acc.rent_lamports));
+                    response.push_str(&format!(
+                        "• `{}`\\n  Rent: {} lamports\\n\\n",
+                        acc.pubkey, acc.rent_lamports
+                    ));
                 }
-                
+
                 if count > display_limit {
                     response.push_str(&format!("_\\.\\.\\.and {} more_", count - display_limit));
                 }
-                
-                bot.send_message(msg.chat.id, response)
-                    .parse_mode(teloxide::types::ParseMode::MarkdownV2)
-                    .await?;
+
+                send_markdown_v2_safe(&bot, msg.chat.id, &response).await?;
             }
         }
         Err(e) => {
-            bot.send_message(msg.chat.id, format!("❌ Database error: {}", e)).await?;
+            bot.send_message(msg.chat.id, format!("❌ Database error: {}", e))
+                .await?;
         }
     }
     Ok(())
@@ -262,33 +297,39 @@ async fn handle_reclaimed(bot: Bot, msg: Message, state: Arc<BotState>) -> Respo
 
 // ✅ FIX: Also persist eligible accounts check results
 async fn handle_eligible(bot: Bot, msg: Message, state: Arc<BotState>) -> ResponseResult<()> {
-    bot.send_message(msg.chat.id, "🔍 Checking eligibility...").await?;
-    
+    bot.send_message(msg.chat.id, "🔍 Checking eligibility...")
+        .await?;
+
     let operator_pubkey = match state.config.operator_pubkey() {
         Ok(pk) => pk,
         Err(e) => {
-            bot.send_message(msg.chat.id, format!("❌ Error: {}", e)).await?;
+            bot.send_message(msg.chat.id, format!("❌ Error: {}", e))
+                .await?;
             return Ok(());
         }
     };
-    
+
     let monitor = KoraMonitor::new(state.rpc_client.clone(), operator_pubkey);
-    
+
     match monitor.get_sponsored_accounts(50).await {
         Ok(accounts) => {
-            let eligibility_checker = EligibilityChecker::new(state.rpc_client.clone(), state.config.clone());
+            let eligibility_checker =
+                EligibilityChecker::new(state.rpc_client.clone(), state.config.clone());
             let mut eligible_count = 0;
             let mut total_reclaimable = 0u64;
             let mut eligible_accounts = Vec::new();
-            
+
             for acc in &accounts {
-                if let Ok(true) = eligibility_checker.is_eligible(&acc.pubkey, acc.created_at).await {
+                if let Ok(true) = eligibility_checker
+                    .is_eligible(&acc.pubkey, acc.created_at)
+                    .await
+                {
                     eligible_count += 1;
                     total_reclaimable += acc.rent_lamports;
                     eligible_accounts.push(acc.clone());
                 }
             }
-            
+
             // ✅ FIX: Save all scanned accounts to database (not just eligible ones)
             let db_accounts: Vec<SponsoredAccount> = accounts
                 .iter()
@@ -305,26 +346,27 @@ async fn handle_eligible(bot: Bot, msg: Message, state: Arc<BotState>) -> Respon
                     reclaim_strategy: None,
                 })
                 .collect();
-            
+
             let db = state.database.lock().await;
             if let Err(e) = db.save_accounts_batch(&db_accounts) {
                 error!("Failed to save accounts from /eligible check: {}", e);
             }
-            
-            bot.send_message(
+
+            send_markdown_v2_safe(
+                &bot,
                 msg.chat.id,
-                format!(
-                    "💰 *Eligibility Check*\\n\\nFound {} eligible accounts\\.\\nEst\\. reclaimable: {}", 
+                &format!(
+                    "💰 *Eligibility Check*\n\nFound {} eligible accounts.\nEst. reclaimable: {}",
                     eligible_count,
                     format_sol_tg(total_reclaimable)
-                )
+                ),
             )
-            .parse_mode(teloxide::types::ParseMode::MarkdownV2)
             .await?;
         }
         Err(e) => {
             error!("Telegram /eligible check failed: {}", e);
-            bot.send_message(msg.chat.id, format!("❌ Error checking eligibility: {}", e)).await?;
+            bot.send_message(msg.chat.id, format!("❌ Error checking eligibility: {}", e))
+                .await?;
         }
     }
     Ok(())
@@ -353,12 +395,11 @@ async fn handle_stats(bot: Bot, msg: Message, state: Arc<BotState>) -> ResponseR
                 format_sol_tg(stats.total_reclaimed),
                 stats.avg_reclaim_amount
             );
-            bot.send_message(msg.chat.id, msg_text)
-                .parse_mode(teloxide::types::ParseMode::MarkdownV2)
-                .await?;
+            send_markdown_v2_safe(&bot, msg.chat.id, &msg_text).await?;
         }
         Err(e) => {
-            bot.send_message(msg.chat.id, format!("❌ Error fetching stats: {}", e)).await?;
+            bot.send_message(msg.chat.id, format!("❌ Error fetching stats: {}", e))
+                .await?;
         }
     }
     Ok(())
@@ -376,13 +417,15 @@ async fn handle_settings(bot: Bot, msg: Message, state: Arc<BotState>) -> Respon
         *Database*: `{}`",
         config.solana.rpc_url,
         config.reclaim.min_inactive_days,
-        if config.reclaim.auto_reclaim_enabled { "On" } else { "Off" },
+        if config.reclaim.auto_reclaim_enabled {
+            "On"
+        } else {
+            "Off"
+        },
         config.reclaim.batch_size,
         if config.reclaim.dry_run { "Yes" } else { "No" },
         config.database.path
     );
-    bot.send_message(msg.chat.id, settings_msg)
-        .parse_mode(teloxide::types::ParseMode::MarkdownV2)
-        .await?;
+    send_markdown_v2_safe(&bot, msg.chat.id, &settings_msg).await?;
     Ok(())
 }

@@ -1,9 +1,10 @@
 // src/telegram/auto_notify.rs - COMPLETE FIXED VERSION
 
+use crate::config::Config;
+use crate::telegram::formatters::escape_markdown_v2;
 use teloxide::prelude::*;
 use teloxide::types::{ChatId, ParseMode};
-use tracing::{info, error};
-use crate::config::Config;
+use tracing::{error, info};
 
 pub struct AutoNotifier {
     bot: Bot,
@@ -25,7 +26,8 @@ impl AutoNotifier {
             }
 
             let bot = Bot::new(telegram_config.bot_token.clone());
-            let chat_ids: Vec<i64> = telegram_config.authorized_users
+            let chat_ids: Vec<i64> = telegram_config
+                .authorized_users
                 .iter()
                 .map(|&id| id as i64)
                 .collect();
@@ -49,8 +51,9 @@ impl AutoNotifier {
         }
 
         for chat_id in &self.chat_ids {
-            match self.bot
-                .send_message(ChatId(*chat_id), message)
+            match self
+                .bot
+                .send_message(ChatId(*chat_id), escape_markdown_v2(message))
                 .parse_mode(ParseMode::MarkdownV2)
                 .await
             {
@@ -65,24 +68,20 @@ impl AutoNotifier {
     }
 
     /// Send passive reclaim notification
-    pub async fn notify_passive_reclaim(
-        &self,
-        amount: u64,
-        accounts: &[String],
-        confidence: &str,
-    ) {
+    pub async fn notify_passive_reclaim(&self, amount: u64, accounts: &[String], confidence: &str) {
         if !self.enabled {
             return;
         }
-        
+
         let sol_amount = crate::solana::rent::RentCalculator::lamports_to_sol(amount);
-        
+
         let accounts_str = if accounts.len() <= 3 {
-            accounts.iter()
+            accounts
+                .iter()
                 .map(|a| {
                     // Format pubkey for display
                     let short = if a.len() > 12 {
-                        format!("{}...{}", &a[..6], &a[a.len()-6..])
+                        format!("{}...{}", &a[..6], &a[a.len() - 6..])
                     } else {
                         a.clone()
                     };
@@ -93,18 +92,16 @@ impl AutoNotifier {
         } else {
             format!("{} accounts", accounts.len())
         };
-        
+
         let message = format!(
             "🔄 *Passive Reclaim Detected*\n\n\
              Amount: *{:.9} SOL*\n\
              Confidence: {}\n\
              Likely from:\n{}\n\n\
              This rent returned to treasury when the user closed their account.",
-            sol_amount,
-            confidence,
-            accounts_str
+            sol_amount, confidence, accounts_str
         );
-        
+
         self.send_message(&message).await;
     }
 
@@ -204,7 +201,7 @@ impl AutoNotifier {
         }
 
         let sol_amount = crate::solana::rent::RentCalculator::lamports_to_sol(amount);
-        
+
         if sol_amount < threshold_sol {
             return; // Don't notify if below threshold
         }
@@ -234,8 +231,7 @@ impl AutoNotifier {
             Operations: {}\n\
             Total reclaimed: *{:.9} SOL*\n\n\
             _Last 24 hours of activity_",
-            operations,
-            sol_amount
+            operations, sol_amount
         );
 
         self.send_message(&message).await;
@@ -246,7 +242,7 @@ impl AutoNotifier {
         if pubkey.len() <= 12 {
             pubkey.to_string()
         } else {
-            format!("{}...{}", &pubkey[..8], &pubkey[pubkey.len()-8..])
+            format!("{}...{}", &pubkey[..8], &pubkey[pubkey.len() - 8..])
         }
     }
 }
